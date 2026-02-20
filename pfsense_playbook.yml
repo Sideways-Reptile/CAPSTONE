@@ -1,0 +1,217 @@
+---
+# pfsense_playbook.yml
+# pfSense Network Segmentation — Task 1 + Task 2
+#
+# Requirements:
+#   ansible-galaxy collection install pfsensible.core
+#
+# Usage:
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml
+#
+# Run individual sections with tags:
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml --tags aliases
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml --tags interfaces
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml --tags rules
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml --tags guest
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml --tags nat
+#   ansible-playbook -i inventory.ini pfsense_playbook.yml --tags apply
+
+- name: pfSense Network Segmentation — Task 1 + Task 2
+  hosts: pfsense
+  gather_facts: false
+
+  # -------------------------------------------------------------------------
+  # ALIASES
+  # -------------------------------------------------------------------------
+  tasks:
+    - name: Create network aliases
+      pfsensible.core.pfsense_alias:
+        name:    "{{ item.name }}"
+        type:    "{{ item.type }}"
+        address: "{{ item.address }}"
+        descr:   "{{ item.descr }}"
+        state:   present
+      loop:
+        - name: NET_MGMT
+          type: network
+          address: "10.10.10.0/24"
+          descr: "Management Network"
+
+        - name: NET_CORP
+          type: network
+          address: "172.16.1.0/24"
+          descr: "Corporate Network"
+
+        - name: NET_DMZ
+          type: network
+          address: "192.168.100.0/24"
+          descr: "DMZ Network"
+
+        - name: NET_GUEST
+          type: network
+          address: "192.168.200.0/24"
+          descr: "Guest Network"
+
+        - name: RFC1918_ALL
+          type: network
+          address: "10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+          descr: "All RFC1918 Private Networks"
+
+        - name: PUBLIC_DNS
+          type: host
+          address: "8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1"
+          descr: "Public DNS Servers"
+      tags: aliases
+
+    # -------------------------------------------------------------------------
+    # INTERFACES
+    # -------------------------------------------------------------------------
+    - name: Configure LAN/OPT interfaces
+      pfsensible.core.pfsense_interface:
+        descr:     "{{ item.descr }}"
+        interface: "{{ item.interface }}"
+        ipaddr:    "{{ item.ipaddr }}"
+        subnet:    "{{ item.subnet | default(omit) }}"
+        enable:    true
+        state:     present
+      loop:
+        - { interface: wan,  ipaddr: "10.10.10.1",    subnet: "24", descr: "MGMT"  }
+        - { interface: lan,  ipaddr: "172.16.1.1",    subnet: "24", descr: "CORP"  }
+        - { interface: opt1, ipaddr: "192.168.100.1", subnet: "24", descr: "DMZ"   }
+        - { interface: opt2, ipaddr: "192.168.200.1", subnet: "24", descr: "GUEST" }
+        - { interface: opt3, ipaddr: "dhcp",                        descr: "WAN"   }
+      tags: interfaces
+
+    # -------------------------------------------------------------------------
+    # FIREWALL RULES — MGMT
+    # -------------------------------------------------------------------------
+    - name: "MGMT - Full access to all networks"
+      pfsensible.core.pfsense_rule:
+        name:        "MGMT Full Access"
+        action:      pass
+        interface:   wan
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_MGMT
+        destination: any
+        state:       present
+      tags: rules
+
+    # -------------------------------------------------------------------------
+    # FIREWALL RULES — CORP
+    # -------------------------------------------------------------------------
+    - name: "CORP - Access to DMZ"
+      pfsensible.core.pfsense_rule:
+        name:        "CORP to DMZ"
+        action:      pass
+        interface:   lan
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_CORP
+        destination: NET_DMZ
+        state:       present
+      tags: rules
+
+    - name: "CORP - Internal traffic"
+      pfsensible.core.pfsense_rule:
+        name:        "CORP Internal"
+        action:      pass
+        interface:   lan
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_CORP
+        destination: NET_CORP
+        state:       present
+      tags: rules
+
+    - name: "CORP - Internet access"
+      pfsensible.core.pfsense_rule:
+        name:        "CORP to Internet"
+        action:      pass
+        interface:   lan
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_CORP
+        destination: any
+        state:       present
+      tags: rules
+
+    # -------------------------------------------------------------------------
+    # FIREWALL RULES — DMZ
+    # -------------------------------------------------------------------------
+    - name: "DMZ - Internal traffic only"
+      pfsensible.core.pfsense_rule:
+        name:        "DMZ Internal"
+        action:      pass
+        interface:   opt1
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_DMZ
+        destination: NET_DMZ
+        state:       present
+      tags: rules
+
+    # -------------------------------------------------------------------------
+    # FIREWALL RULES — GUEST (Task 2)
+    # Rule order is critical: block RFC1918 → allow DNS → allow internet
+    # 'after' ensures pfSense inserts them in the correct sequence.
+    # -------------------------------------------------------------------------
+    - name: "Task 2: GUEST - Block all RFC1918 internal networks"
+      pfsensible.core.pfsense_rule:
+        name:        "GUEST Block RFC1918"
+        action:      block
+        interface:   opt2
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_GUEST
+        destination: RFC1918_ALL
+        log:         true
+        after:       top        # Must be evaluated before the allow-internet rule
+        state:       present
+      tags: [rules, guest]
+
+    - name: "Task 2: GUEST - Allow DNS queries to public resolvers only"
+      pfsensible.core.pfsense_rule:
+        name:             "GUEST Allow DNS"
+        action:           pass
+        interface:        opt2
+        ipprotocol:       inet
+        protocol:         udp
+        source:           NET_GUEST
+        destination:      PUBLIC_DNS
+        destination_port: "53"
+        log:              true
+        after:            "GUEST Block RFC1918"
+        state:            present
+      tags: [rules, guest]
+
+    - name: "Task 2: GUEST - Allow internet access (non-RFC1918 traffic passes)"
+      pfsensible.core.pfsense_rule:
+        name:        "GUEST Allow Internet"
+        action:      pass
+        interface:   opt2
+        ipprotocol:  inet
+        protocol:    any
+        source:      NET_GUEST
+        destination: any
+        log:         true
+        after:       "GUEST Allow DNS"
+        state:       present
+      tags: [rules, guest]
+
+    # -------------------------------------------------------------------------
+    # NAT — outbound NAT set to automatic
+    # -------------------------------------------------------------------------
+    - name: "Set outbound NAT to automatic mode"
+      pfsensible.core.pfsense_nat_outbound:
+        mode:  automatic
+        state: present
+      tags: nat
+
+    # -------------------------------------------------------------------------
+    # APPLY — reload packet filter to activate all changes
+    # -------------------------------------------------------------------------
+    - name: "Reload pfSense packet filter"
+      ansible.builtin.command: pfSsh.php playback filter reload
+      changed_when: false
+      tags: apply
