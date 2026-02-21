@@ -119,37 +119,44 @@ class BannerDeployer:
     
     def deploy_to_pfsense(self, host: str, username: str, password: str):
         """Deploy banner to pfSense via SSH"""
+        import base64
         print(f"\n[*] Deploying banner to pfSense ({host})...")
-        
+
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(host, username=username, password=password, timeout=10)
-            
-            # pfSense uses PHP for config
-            # This is a simplified approach - in production, use pfSense API
-            
+
+            # Base64-encode banner to safely handle newlines and special characters
+            encoded = base64.b64encode(self.banner_text.encode()).decode()
+
             commands = [
                 # Option 8 = Shell
                 "8",
-                # Edit config file
-                f"echo '{self.banner_text}' > /etc/banner.txt",
-                # Exit shell
+                # Write banner file using base64 to avoid quoting/newline issues
+                f"echo '{encoded}' | b64decode -r > /etc/banner.txt",
+                # Add Banner directive to sshd_config if not already present
+                "grep -q 'Banner /etc/banner.txt' /etc/ssh/sshd_config || echo 'Banner /etc/banner.txt' >> /etc/ssh/sshd_config",
+                # Restart sshd so the Banner directive takes effect
+                "service sshd restart",
                 "exit"
             ]
-            
+
             shell = ssh.invoke_shell()
             time.sleep(2)
-            
+
             for cmd in commands:
                 shell.send(cmd + "\n")
                 time.sleep(1)
-            
+
             output = shell.recv(4096).decode()
             ssh.close()
-            
-            print(f"  [+] Banner deployed to pfSense")
-            
+
+            if "banner.txt" in output or "sshd" in output.lower():
+                print(f"  [+] Banner deployed to pfSense")
+            else:
+                print(f"  [!] Commands sent but could not confirm success. Check pfSense manually.")
+
         except Exception as e:
             print(f"  [!] Error deploying to pfSense: {e}")
     
@@ -254,24 +261,28 @@ class BannerValidator:
     def test_ssh_banner(self, host: str, port: int = 22) -> bool:
         """Test if SSH banner is present"""
         print(f"\n[*] Testing SSH banner on {host}...")
-        
+
         try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            sock.connect((host, port))
-            
-            # Read SSH banner
-            banner = sock.recv(1024).decode()
-            sock.close()
-            
-            if "AUTHORIZED" in banner or "authorized" in banner:
+            transport = paramiko.Transport((host, port))
+            transport.start_client(timeout=5)
+            # Intentionally use wrong credentials — the server sends the banner
+            # message (SSH_MSG_USERAUTH_BANNER) during the auth exchange, so we
+            # must initiate auth before get_banner() returns anything useful.
+            try:
+                transport.auth_password("nobody", "wrongpassword")
+            except paramiko.AuthenticationException:
+                pass  # Expected — we only need to trigger the banner send
+
+            banner = transport.get_banner()
+            transport.close()
+
+            if banner and ("AUTHORIZED" in banner.decode() or "authorized" in banner.decode()):
                 print(f"  [+] Banner detected on {host}")
                 return True
             else:
                 print(f"  [!] No banner detected on {host}")
                 return False
-                
+
         except Exception as e:
             print(f"  [!] Error testing {host}: {e}")
             return False
