@@ -6,3 +6,33 @@ many situations the pattern is automatically based on the network device's promp
 2. Increase the read_timeout to a larger value.
 
 You can also look at the Netmiko session_log or debug log for more information.
+
+
+[*] Connecting to pfSense at 10.10.10.1:22...
+Traceback (most recent call last):
+  File "/home/osboxes/Scripts/CAPSTONE/pfsense_auto_config.py", line 544, in <module>
+    main()
+  File "/home/osboxes/Scripts/CAPSTONE/pfsense_auto_config.py", line 521, in main
+    configurator.run_full_setup()
+  File "/home/osboxes/Scripts/CAPSTONE/pfsense_auto_config.py", line 276, in run_full_setup
+    self.connect()
+  File "/home/osboxes/Scripts/CAPSTONE/pfsense_auto_config.py", line 56, in connect
+    self.connection = ConnectHandler(**self.device_params)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/ssh_dispatcher.py", line 460, in ConnectHandler
+    return ConnectionClass(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/base_connection.py", line 495, in __init__
+    self._open()
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/base_connection.py", line 501, in _open
+    self._try_session_preparation()
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/base_connection.py", line 997, in _try_session_preparation
+    self.session_preparation()
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/linux/linux_ssh.py", line 23, in session_preparation
+    self._test_channel_read(pattern=self.prompt_pattern)
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/base_connection.py", line 1244, in _test_channel_read
+    return self.read_until_pattern(pattern=pattern, read_timeout=20)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/base_connection.py", line 755, in read_until_pattern
+    raise ReadTimeout(msg)
+netmiko.exceptions.ReadTimeout: 
