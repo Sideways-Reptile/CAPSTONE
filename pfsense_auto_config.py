@@ -2,29 +2,31 @@
 """
 pfSense Auto-Configuration Script
 Configures interfaces, aliases, and firewall rules via:
-  - Netmiko SSH   (Option 2 — replaces FauxAPI)
-  - XML generation (Option 1 — no connection needed)
-  - CLI commands   (Option 3 — copy-paste into console)
+  - SSH / paramiko  (Option 2 — live push to pfSense)
+  - XML generation  (Option 1 — no connection needed)
+  - CLI commands    (Option 3 — copy-paste into console)
 
 SSH prerequisites:
   1. Enable SSH on pfSense: System → Advanced → Admin Access → Enable Secure Shell
-  2. Set admin shell to /bin/sh so SSH drops to shell (not the console menu):
-       System → User Manager → admin → Shell → /bin/sh
-  3. pip install netmiko
+  2. pip install paramiko
+  (No shell change needed — paramiko exec_command bypasses the pfSense console menu)
 """
 
 import base64
 
-from netmiko import ConnectHandler
-from netmiko.exceptions import NetmikoAuthenticationException, NetmikoTimeoutException
+import paramiko
 
 
 # ---------------------------------------------------------------------------
-# SSH Configurator — Netmiko
+# SSH Configurator — paramiko
 # ---------------------------------------------------------------------------
 
 class pfSenseSSHConfigurator:
-    """Configure pfSense over SSH using Netmiko.
+    """Configure pfSense over SSH using paramiko.
+
+    Uses exec_command() instead of an interactive shell session, so there is
+    no prompt detection involved — the approach that caused Netmiko's
+    '[\$\#] not detected' error on pfSense's non-standard shell.
 
     PHP scripts are transferred via base64 to avoid all shell quoting issues:
         echo <base64_payload> | base64 -d | php
@@ -32,16 +34,10 @@ class pfSenseSSHConfigurator:
 
     def __init__(self, host: str, username: str, password: str, port: int = 22):
         self.host = host
-        self.device_params = {
-            "device_type": "linux",   # pfSense is FreeBSD; 'linux' works fine for shell access
-            "host": host,
-            "username": username,
-            "password": password,
-            "port": port,
-            "timeout": 30,
-            "global_delay_factor": 2,
-        }
-        self.connection = None
+        self.port = port
+        self.username = username
+        self.password = password
+        self.client = None
 
     # ------------------------------------------------------------------
     # Connection helpers
@@ -49,21 +45,31 @@ class pfSenseSSHConfigurator:
 
     def connect(self):
         """Open SSH connection to pfSense."""
-        print(f"\n[*] Connecting to pfSense at {self.host}:{self.device_params['port']}...")
+        print(f"\n[*] Connecting to pfSense at {self.host}:{self.port}...")
         try:
-            self.connection = ConnectHandler(**self.device_params)
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.client.connect(
+                self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=30,
+                look_for_keys=False,
+                allow_agent=False,
+            )
             print("  ✓ SSH connection established")
-        except NetmikoAuthenticationException:
+        except paramiko.AuthenticationException:
             print("  [!] Authentication failed — check SSH credentials.")
             raise
-        except NetmikoTimeoutException:
-            print("  [!] Connection timed out — verify SSH is enabled on pfSense.")
+        except (paramiko.ssh_exception.NoValidConnectionsError, TimeoutError):
+            print("  [!] Connection failed — verify SSH is enabled on pfSense.")
             raise
 
     def disconnect(self):
         """Close SSH connection."""
-        if self.connection:
-            self.connection.disconnect()
+        if self.client:
+            self.client.close()
             print("\n[*] SSH session closed")
 
     # ------------------------------------------------------------------
@@ -76,16 +82,22 @@ class pfSenseSSHConfigurator:
         Encodes the script as base64 and pipes it through php to avoid
         any shell quoting or escaping problems:
             echo <b64> | base64 -d | php
+
+        exec_command() opens a fresh SSH channel per call with no
+        interactive shell or prompt detection required.
         """
         encoded = base64.b64encode(php_code.encode()).decode()
-        return self.connection.send_command(
-            f"echo {encoded} | base64 -d | php",
-            read_timeout=30,
+        _, stdout, stderr = self.client.exec_command(
+            f"echo {encoded} | base64 -d | php", timeout=30
         )
+        out = stdout.read().decode().strip()
+        err = stderr.read().decode().strip()
+        return f"STDERR: {err}\n{out}" if err else out
 
     def _run_cmd(self, command: str, timeout: int = 30) -> str:
         """Run a plain shell command on pfSense."""
-        return self.connection.send_command(command, read_timeout=timeout)
+        _, stdout, _ = self.client.exec_command(command, timeout=timeout)
+        return stdout.read().decode().strip()
 
     # ------------------------------------------------------------------
     # Configuration tasks
@@ -500,9 +512,9 @@ def main():
 
     elif choice == "2":
         print("\n[*] SSH Configuration — Netmiko")
-        print("[!] Prerequisites:")
+        print("[!] Prerequisite:")
         print("    - SSH enabled: System → Advanced → Admin Access → Enable Secure Shell")
-        print("    - Shell set to /bin/sh: System → User Manager → admin → Shell → /bin/sh")
+        print("    - No shell change needed — paramiko exec_command bypasses the console menu")
         print()
         host     = input("pfSense IP   [10.10.10.1]: ").strip() or "10.10.10.1"
         username = input("SSH Username [admin]:       ").strip() or "admin"
