@@ -36,3 +36,31 @@ Traceback (most recent call last):
   File "/home/osboxes/Scripts/CAPSTONE/lib/python3.12/site-packages/netmiko/base_connection.py", line 755, in read_until_pattern
     raise ReadTimeout(msg)
 netmiko.exceptions.ReadTimeout: 
+
+
+
+
+
+GNS3 → Right-click pfSense → Console
+
+Login: admin / pfsense
+
+Select option: 8 (Shell)
+
+Type:
+cat > /etc/issue.net << 'EOF'
+*******************************************************************************
+                        AUTHORIZED ACCESS ONLY
+*******************************************************************************
+This system is for authorized use only. All activity is monitored.
+Unauthorized access is prohibited and will be prosecuted.
+*******************************************************************************
+EOF
+
+Press Enter
+
+Then:
+echo 'Banner /etc/issue.net' >> /etc/ssh/sshd_config
+/etc/rc.d/sshd restart
+
+Exit (Ctrl+D twice)
