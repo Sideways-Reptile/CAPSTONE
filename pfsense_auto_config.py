@@ -2,9 +2,8 @@
 """
 pfSense Auto-Configuration Script
 Configures interfaces, aliases, and firewall rules via:
-  - SSH / paramiko  (Option 2 — live push to pfSense)
-  - XML generation  (Option 1 — no connection needed)
-  - CLI commands    (Option 3 — copy-paste into console)
+  - SSH / paramiko  (Option 1 — live push to pfSense)
+  - CLI commands    (Option 2 — copy-paste into console)
 
 SSH prerequisites:
   1. Enable SSH on pfSense: System → Advanced → Admin Access → Enable Secure Shell
@@ -148,11 +147,11 @@ echo "OK\\n";
 
         # (pfsense_key, physical_if, ip, subnet, description)
         interfaces = [
-            ("wan",  "em0", "10.10.10.1",    "24", "MGMT"),
-            ("lan",  "em1", "172.16.1.1",    "24", "CORP"),
-            ("opt1", "em2", "192.168.100.1", "24", "DMZ"),
-            ("opt2", "em3", "192.168.200.1", "24", "GUEST"),
-            ("opt3", "em4", "dhcp",          "",   "WAN"),
+            ("wan",  "em0", "dhcp",          "",   "WAN"),
+            ("lan",  "em1", "10.10.10.1",    "24", "MGMT"),
+            ("opt1", "em2", "172.16.1.1",    "24", "CORP"),
+            ("opt2", "em3", "192.168.100.1", "24", "DMZ"),
+            ("opt3", "em4", "192.168.200.1", "24", "GUEST"),
         ]
 
         for key, iface, ipaddr, subnet, descr in interfaces:
@@ -197,18 +196,18 @@ echo "OK\\n";
 
         # (interface, action, protocol, src_alias, dst_alias, descr, dst_port, log)
         rules = [
-            # MGMT gets full unrestricted access
-            ("wan",  "pass",  "any", "NET_MGMT",  "any",         "MGMT Full Access",     "",   False),
-            # CORP segment
-            ("lan",  "pass",  "any", "NET_CORP",  "NET_DMZ",     "CORP to DMZ",          "",   False),
-            ("lan",  "pass",  "any", "NET_CORP",  "NET_CORP",    "CORP Internal",        "",   False),
-            ("lan",  "pass",  "any", "NET_CORP",  "any",         "CORP to Internet",     "",   False),
-            # DMZ internal only
-            ("opt1", "pass",  "any", "NET_DMZ",   "NET_DMZ",     "DMZ Internal",         "",   False),
-            # GUEST — Task 2: block RFC1918 first, then allow DNS, then internet
-            ("opt2", "block", "any", "NET_GUEST", "RFC1918_ALL", "GUEST Block RFC1918",  "",   True),
-            ("opt2", "pass",  "udp", "NET_GUEST", "PUBLIC_DNS",  "GUEST Allow DNS",      "53", True),
-            ("opt2", "pass",  "any", "NET_GUEST", "any",         "GUEST Allow Internet", "",   True),
+            # MGMT (lan/em1) — full unrestricted access
+            ("lan",  "pass",  "any", "NET_MGMT",  "any",         "MGMT Full Access",     "",   False),
+            # CORP (opt1/em2)
+            ("opt1", "pass",  "any", "NET_CORP",  "NET_DMZ",     "CORP to DMZ",          "",   False),
+            ("opt1", "pass",  "any", "NET_CORP",  "NET_CORP",    "CORP Internal",        "",   False),
+            ("opt1", "pass",  "any", "NET_CORP",  "any",         "CORP to Internet",     "",   False),
+            # DMZ (opt2/em3) — internal only
+            ("opt2", "pass",  "any", "NET_DMZ",   "NET_DMZ",     "DMZ Internal",         "",   False),
+            # GUEST (opt3/em4) — Task 2: block RFC1918 first, then allow DNS, then internet
+            ("opt3", "block", "any", "NET_GUEST", "RFC1918_ALL", "GUEST Block RFC1918",  "",   True),
+            ("opt3", "pass",  "udp", "NET_GUEST", "PUBLIC_DNS",  "GUEST Allow DNS",      "53", True),
+            ("opt3", "pass",  "any", "NET_GUEST", "any",         "GUEST Allow Internet", "",   True),
         ]
 
         for iface, action, proto, src, dst, descr, dstport, log in rules:
@@ -273,7 +272,7 @@ echo "OK\n";
     def run_full_setup(self):
         """Run the complete pfSense configuration sequence over SSH."""
         print("=" * 70)
-        print("pfSense SSH Auto-Configuration (Netmiko)")
+        print("pfSense SSH Auto-Configuration (paramiko)")
         print("Task 1 + Task 2: Network Segmentation with Guest ACL")
         print("=" * 70)
 
@@ -297,201 +296,6 @@ echo "OK\n";
 
 
 # ---------------------------------------------------------------------------
-# XML Config Generator — no connection needed
-# ---------------------------------------------------------------------------
-
-class pfSenseXMLGenerator:
-    """Generate a pfSense configuration XML file for manual import."""
-
-    def generate_config_xml(self) -> str:
-        """Generate complete pfSense configuration XML."""
-        return """<?xml version="1.0"?>
-<pfsense>
-  <version>21.0</version>
-
-  <!-- Aliases (Address Objects) -->
-  <aliases>
-    <alias>
-      <name>NET_MGMT</name>
-      <type>network</type>
-      <address>10.10.10.0/24</address>
-      <descr>Management Network</descr>
-    </alias>
-    <alias>
-      <name>NET_CORP</name>
-      <type>network</type>
-      <address>172.16.1.0/24</address>
-      <descr>Corporate Network</descr>
-    </alias>
-    <alias>
-      <name>NET_DMZ</name>
-      <type>network</type>
-      <address>192.168.100.0/24</address>
-      <descr>DMZ Network</descr>
-    </alias>
-    <alias>
-      <name>NET_GUEST</name>
-      <type>network</type>
-      <address>192.168.200.0/24</address>
-      <descr>Guest Network</descr>
-    </alias>
-    <alias>
-      <name>RFC1918_ALL</name>
-      <type>network</type>
-      <address>10.0.0.0/8 172.16.0.0/12 192.168.0.0/16</address>
-      <descr>All RFC1918 Private Networks</descr>
-    </alias>
-    <alias>
-      <name>PUBLIC_DNS</name>
-      <type>host</type>
-      <address>8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1</address>
-      <descr>Public DNS Servers</descr>
-    </alias>
-  </aliases>
-
-  <!-- Interface Configuration -->
-  <interfaces>
-    <wan>
-      <descr>MGMT</descr>
-      <if>em0</if>
-      <ipaddr>10.10.10.1</ipaddr>
-      <subnet>24</subnet>
-      <enable></enable>
-    </wan>
-    <lan>
-      <descr>CORP</descr>
-      <if>em1</if>
-      <ipaddr>172.16.1.1</ipaddr>
-      <subnet>24</subnet>
-      <enable></enable>
-    </lan>
-    <opt1>
-      <descr>DMZ</descr>
-      <if>em2</if>
-      <ipaddr>192.168.100.1</ipaddr>
-      <subnet>24</subnet>
-      <enable></enable>
-    </opt1>
-    <opt2>
-      <descr>GUEST</descr>
-      <if>em3</if>
-      <ipaddr>192.168.200.1</ipaddr>
-      <subnet>24</subnet>
-      <enable></enable>
-    </opt2>
-    <opt3>
-      <descr>WAN</descr>
-      <if>em4</if>
-      <ipaddr>dhcp</ipaddr>
-      <enable></enable>
-    </opt3>
-  </interfaces>
-
-  <!-- Firewall Rules -->
-  <filter>
-    <rule>
-      <type>pass</type>
-      <interface>wan</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_MGMT</network></source>
-      <destination><any/></destination>
-      <descr>MGMT Full Access</descr>
-      <log></log>
-    </rule>
-    <rule>
-      <type>pass</type>
-      <interface>lan</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_CORP</network></source>
-      <destination><network>NET_DMZ</network></destination>
-      <descr>CORP to DMZ</descr>
-    </rule>
-    <rule>
-      <type>pass</type>
-      <interface>lan</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_CORP</network></source>
-      <destination><network>NET_CORP</network></destination>
-      <descr>CORP Internal</descr>
-    </rule>
-    <rule>
-      <type>pass</type>
-      <interface>lan</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_CORP</network></source>
-      <destination><any/></destination>
-      <descr>CORP to Internet</descr>
-      <log></log>
-    </rule>
-    <rule>
-      <type>pass</type>
-      <interface>opt1</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_DMZ</network></source>
-      <destination><network>NET_DMZ</network></destination>
-      <descr>DMZ Internal</descr>
-    </rule>
-    <!-- Task 2: GUEST rules — block RFC1918 MUST be first -->
-    <rule>
-      <type>block</type>
-      <interface>opt2</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_GUEST</network></source>
-      <destination><network>RFC1918_ALL</network></destination>
-      <descr>Task 2: GUEST Block All Internal Networks (RFC1918)</descr>
-      <log></log>
-    </rule>
-    <rule>
-      <type>pass</type>
-      <interface>opt2</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>udp</protocol>
-      <source><network>NET_GUEST</network></source>
-      <destination><network>PUBLIC_DNS</network><port>53</port></destination>
-      <descr>Task 2: GUEST Allow DNS Queries Only</descr>
-      <log></log>
-    </rule>
-    <rule>
-      <type>pass</type>
-      <interface>opt2</interface>
-      <ipprotocol>inet</ipprotocol>
-      <protocol>any</protocol>
-      <source><network>NET_GUEST</network></source>
-      <destination><any/></destination>
-      <descr>Task 2: GUEST Allow Internet Access Only</descr>
-      <log></log>
-    </rule>
-  </filter>
-
-  <!-- Outbound NAT -->
-  <nat>
-    <outbound>
-      <mode>automatic</mode>
-    </outbound>
-  </nat>
-
-</pfsense>
-"""
-
-    def save_config(self, filename: str = "pfsense-autoconfig.xml"):
-        """Save generated XML to a file."""
-        with open(filename, "w") as f:
-            f.write(self.generate_config_xml())
-        print(f"[+] Configuration saved to {filename}")
-        print("\nTo apply:")
-        print("  1. Login to pfSense GUI")
-        print("  2. Diagnostics → Backup & Restore")
-        print("  3. Upload this XML file and restore")
-        print("  4. pfSense will reboot with the new config")
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -499,22 +303,15 @@ def main():
     print("=" * 70)
     print("pfSense Configuration Options")
     print("=" * 70)
-    print("\n1. Generate XML config file  (no connection needed)")
-    print("2. Configure via SSH          (Netmiko — live push to pfSense)")
-    print("3. Generate CLI commands      (copy-paste into pfSense console)")
+    print("\n1. Configure via SSH  (paramiko — live push to pfSense)")
+    print("2. Generate CLI commands  (copy-paste into pfSense console)")
 
-    choice = input("\nSelect option (1-3): ").strip()
+    choice = input("\nSelect option (1-2): ").strip()
 
     if choice == "1":
-        print("\n[*] Generating XML configuration file...")
-        generator = pfSenseXMLGenerator()
-        generator.save_config()
-
-    elif choice == "2":
-        print("\n[*] SSH Configuration — Netmiko")
-        print("[!] Prerequisite:")
-        print("    - SSH enabled: System → Advanced → Admin Access → Enable Secure Shell")
-        print("    - No shell change needed — paramiko exec_command bypasses the console menu")
+        print("\n[*] SSH Configuration — paramiko")
+        print("[!] Prerequisite: SSH enabled on pfSense:")
+        print("    System → Advanced → Admin Access → Enable Secure Shell")
         print()
         host     = input("pfSense IP   [10.10.10.1]: ").strip() or "10.10.10.1"
         username = input("SSH Username [admin]:       ").strip() or "admin"
@@ -525,7 +322,7 @@ def main():
         configurator = pfSenseSSHConfigurator(host, username, password, port)
         configurator.run_full_setup()
 
-    elif choice == "3":
+    elif choice == "2":
         print("\n[*] Generating CLI commands...")
         print("\n# Copy-paste these into the pfSense SSH console or shell:\n")
         print("""
