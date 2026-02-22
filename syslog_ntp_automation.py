@@ -16,13 +16,6 @@ class SyslogNTPConfigurator:
     """Automate syslog and NTP configuration on Cisco switches"""
     
     def __init__(self, syslog_server: str = "10.10.10.1", ntp_server: str = "10.10.10.1"):
-        """
-        Initialize configurator
-        
-        Args:
-            syslog_server: IP of syslog server (pfSense)
-            ntp_server: IP of NTP server (pfSense)
-        """
         self.syslog_server = syslog_server
         self.ntp_server = ntp_server
         
@@ -30,52 +23,43 @@ class SyslogNTPConfigurator:
             {
                 'device_type': 'cisco_ios',
                 'host': '10.10.10.11',
-                'username': 'admin',
-                'password': 'Admin123!',
-                'secret': 'Admin123!',
+                'username': 'case',
+                'password': 'sidewaays',
+                'secret': 'sidewaays',
                 'hostname': 'SW1-CORE',
             },
             {
                 'device_type': 'cisco_ios',
                 'host': '10.10.10.12',
-                'username': 'admin',
-                'password': 'Admin123!',
-                'secret': 'Admin123!',
+                'username': 'case',
+                'password': 'sidewaays',
+                'secret': 'sidewaays',
                 'hostname': 'SW2-CORP',
             },
             {
                 'device_type': 'cisco_ios',
                 'host': '10.10.10.13',
-                'username': 'admin',
-                'password': 'Admin123!',
-                'secret': 'Admin123!',
+                'username': 'case',
+                'password': 'sidewaays',
+                'secret': 'sidewaays',
                 'hostname': 'SW3-DMZ',
             }
         ]
+    
+    def _get_connection_params(self, switch: Dict) -> Dict:
+        """Extract only Netmiko connection parameters"""
+        return {k: v for k, v in switch.items() if k != 'hostname'}
     
     def generate_syslog_config(self) -> List[str]:
         """Generate syslog configuration commands"""
         
         commands = [
-            # Configure syslog server
             f'logging host {self.syslog_server}',
-            
-            # Set logging level (informational = level 6)
             'logging trap informational',
-            
-            # Set syslog facility
             'logging facility local7',
-            
-            # Set source interface for syslog packets
             'logging source-interface vlan 1',
-            
-            # Enable logging to buffer (local backup)
             'logging buffered 51200 informational',
-            
-            # Add timestamps to log messages
             'service timestamps log datetime msec localtime show-timezone',
-            
-            # Enable sequence numbers in logs
             'service sequence-numbers',
         ]
         
@@ -85,21 +69,9 @@ class SyslogNTPConfigurator:
         """Generate NTP configuration commands"""
         
         commands = [
-            # Configure NTP server
             f'ntp server {self.ntp_server}',
-            
-            # Set source interface for NTP
             'ntp source vlan 1',
-            
-            # Set timezone
             f'clock timezone {timezone} {offset}',
-            
-            # Enable NTP authentication (optional but recommended)
-            # 'ntp authenticate',
-            # 'ntp authentication-key 1 md5 YourSecretKey',
-            # f'ntp trusted-key 1',
-            
-            # Add timestamps to debug and log messages
             'service timestamps debug datetime msec localtime show-timezone',
         ]
         
@@ -122,7 +94,8 @@ class SyslogNTPConfigurator:
         
         try:
             # Connect to switch
-            connection = ConnectHandler(**switch)
+            conn_params = self._get_connection_params(switch)
+            connection = ConnectHandler(**conn_params)
             connection.enable()
             
             # Configure syslog
@@ -144,7 +117,6 @@ class SyslogNTPConfigurator:
             save_output = connection.send_command('write memory')
             result['output'] += "=== Save ===\n" + save_output + "\n"
             
-            # Disconnect
             connection.disconnect()
             
             result['success'] = True
@@ -180,21 +152,19 @@ class SyslogNTPConfigurator:
         print(f"\n[*] Verifying syslog on {switch['hostname']}...")
         
         try:
-            connection = ConnectHandler(**switch)
+            conn_params = self._get_connection_params(switch)
+            connection = ConnectHandler(**conn_params)
             connection.enable()
             
-            # Check logging configuration
             logging_output = connection.send_command('show logging')
             result['output'] = logging_output
             
-            # Check if syslog server is configured
             if self.syslog_server in logging_output:
                 result['syslog_server_configured'] = True
                 print(f"  [✓] Syslog server {self.syslog_server} configured")
             else:
                 print(f"  [!] Syslog server not found in configuration")
             
-            # Check if logging is enabled
             if 'Logging to' in logging_output and self.syslog_server in logging_output:
                 result['logging_enabled'] = True
                 print(f"  [✓] Logging to {self.syslog_server} is active")
@@ -221,28 +191,25 @@ class SyslogNTPConfigurator:
         print(f"\n[*] Verifying NTP on {switch['hostname']}...")
         
         try:
-            connection = ConnectHandler(**switch)
+            conn_params = self._get_connection_params(switch)
+            connection = ConnectHandler(**conn_params)
             connection.enable()
             
-            # Check NTP associations
             ntp_output = connection.send_command('show ntp associations')
             result['output'] = ntp_output
             
-            # Check if NTP server is configured
             if self.ntp_server in ntp_output:
                 result['ntp_server_configured'] = True
                 print(f"  [✓] NTP server {self.ntp_server} configured")
             else:
                 print(f"  [!] NTP server not found in associations")
             
-            # Check if synchronized (look for * or ~ symbols)
             if '*' in ntp_output or 'synced' in ntp_output.lower():
                 result['ntp_synchronized'] = True
                 print(f"  [✓] NTP synchronized")
             else:
                 print(f"  [!] NTP not yet synchronized (may take a few minutes)")
             
-            # Get current clock time
             clock_output = connection.send_command('show clock')
             result['clock_time'] = clock_output.strip()
             print(f"  [i] Current time: {result['clock_time']}")
@@ -266,13 +233,11 @@ class SyslogNTPConfigurator:
         
         results = []
         
-        # Configure each switch
         for switch in self.switches:
             result = self.configure_switch(switch)
             results.append(result)
-            time.sleep(2)  # Brief pause between switches
+            time.sleep(2)
         
-        # Summary
         print("\n" + "=" * 70)
         print("Configuration Summary")
         print("=" * 70)
@@ -300,7 +265,6 @@ class SyslogNTPConfigurator:
         syslog_results = []
         ntp_results = []
         
-        # Verify each switch
         for switch in self.switches:
             syslog_result = self.verify_syslog(switch)
             syslog_results.append(syslog_result)
@@ -310,7 +274,6 @@ class SyslogNTPConfigurator:
             ntp_results.append(ntp_result)
             time.sleep(1)
         
-        # Summary
         print("\n" + "=" * 70)
         print("Verification Summary")
         print("=" * 70)
@@ -325,12 +288,8 @@ class SyslogNTPConfigurator:
         
         if ntp_synced < len(ntp_results):
             print("\n[i] Note: NTP synchronization can take 5-10 minutes")
-            print("    Run verification again in a few minutes if not synced")
         
-        return {
-            'syslog': syslog_results,
-            'ntp': ntp_results
-        }
+        return {'syslog': syslog_results, 'ntp': ntp_results}
     
     def generate_report(self, config_results: List, verify_results: Dict):
         """Generate deployment report"""
@@ -359,59 +318,15 @@ class SyslogNTPConfigurator:
             json.dump(report, f, indent=2)
         
         print(f"\n[+] Report saved: {filename}")
-        
-        return report
-    
-    def test_syslog(self, switch: Dict):
-        """Generate test syslog message"""
-        
-        print(f"\n[*] Generating test syslog message on {switch['hostname']}...")
-        
-        try:
-            connection = ConnectHandler(**switch)
-            connection.enable()
-            
-            # Generate test event (shutdown/no shutdown interface)
-            commands = [
-                'interface loopback 99',
-                'description Test interface for syslog verification',
-                'shutdown',
-                'no shutdown',
-                'exit'
-            ]
-            
-            output = connection.send_config_set(commands)
-            print(f"  [+] Test event generated")
-            print(f"  [i] Check pfSense logs: Status → System Logs → System")
-            print(f"  [i] Filter for: {switch['host']} or {switch['hostname']}")
-            
-            connection.disconnect()
-            
-        except Exception as e:
-            print(f"  [!] Error: {e}")
 
 
 def main():
-    """Main execution"""
-    
     print("""
 ╔═══════════════════════════════════════════════════════════════════╗
 ║          Task 6: Syslog & NTP Automation                          ║
-║                                                                   ║
-║  Prerequisites:                                                   ║
-║  • pfSense has remote logging enabled                            ║
-║  • pfSense NTP service is running                                ║
-║  • Switches are reachable via SSH                                ║
-║                                                                   ║
-║  This script will:                                                ║
-║  1. Configure syslog on all switches                             ║
-║  2. Configure NTP on all switches                                ║
-║  3. Verify configuration                                          ║
-║  4. Generate test syslog messages                                ║
 ╚═══════════════════════════════════════════════════════════════════╝
     """)
     
-    # Check for netmiko
     try:
         from netmiko import ConnectHandler
     except ImportError:
@@ -419,54 +334,25 @@ def main():
         print("[!] Install with: pip install netmiko")
         return
     
-    # Initialize configurator
     configurator = SyslogNTPConfigurator(
-        syslog_server="10.10.10.1",  # pfSense IP
-        ntp_server="10.10.10.1"      # pfSense IP
+        syslog_server="10.10.10.1",
+        ntp_server="10.10.10.1"
     )
     
-    # Configure all switches
     config_results = configurator.configure_all()
     
-    # Wait for NTP to potentially sync
     print("\n[*] Waiting 30 seconds for NTP synchronization...")
     time.sleep(30)
     
-    # Verify configuration
     verify_results = configurator.verify_all()
     
-    # Generate report
     configurator.generate_report(config_results, verify_results)
-    
-    # Offer to generate test syslog messages
-    print("\n" + "=" * 70)
-    test_response = input("\nGenerate test syslog messages? (y/n): ").lower()
-    
-    if test_response == 'y':
-        for switch in configurator.switches:
-            configurator.test_syslog(switch)
-            time.sleep(2)
-        
-        print("\n[i] Test messages sent!")
-        print("[i] Check pfSense: Status → System Logs → System")
-        print("[i] Look for interface up/down events")
     
     print("\n" + "=" * 70)
     print("Task 6 Complete!")
     print("=" * 70)
-    print("""
-Verification Steps:
-1. Check pfSense logs: Status → System Logs → System
-2. Look for messages from switch IPs (10.10.10.11-13)
-3. Verify NTP: SSH to switches, run 'show ntp associations'
-4. Check time: SSH to switches, run 'show clock'
-
-Next steps:
-1. Review task6_syslog_ntp_report.json
-2. Monitor syslog messages in pfSense
-3. Verify time synchronization across all devices
-4. Proceed to Task 7 (VLANs)
-    """)
+    print("\nCheck pfSense: Status → System Logs → System")
+    print("Look for messages from 10.10.10.11-13")
 
 
 if __name__ == "__main__":
