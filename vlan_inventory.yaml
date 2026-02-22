@@ -1,0 +1,150 @@
+all:
+  children:
+    cisco_switches:
+      children:
+        core:
+          hosts:
+            SW1-CORE:
+              ansible_host: 10.10.10.11
+              role: core
+              switch_priority: root
+              vlans:
+                - vlan_id: 10
+                  name: MGMT
+                  ip: 10.10.10.1
+                  netmask: 255.255.255.0
+                  description: Management Network
+                - vlan_id: 20
+                  name: CORP
+                  ip: 172.16.1.1
+                  netmask: 255.255.255.0
+                  description: Corporate Network
+                - vlan_id: 30
+                  name: DMZ
+                  ip: 192.168.100.1
+                  netmask: 255.255.255.0
+                  description: DMZ Network
+                - vlan_id: 40
+                  name: GUEST
+                  ip: 192.168.200.1
+                  netmask: 255.255.255.0
+                  description: Guest Network
+              trunk_ports:
+                - GigabitEthernet0/1  # To SW2-CORP
+                - GigabitEthernet0/2  # To SW3-DMZ
+              access_ports:
+                GigabitEthernet0/0:
+                  vlan: 10
+                  description: To pfSense MGMT
+                  
+        distribution:
+          hosts:
+            SW2-CORP:
+              ansible_host: 10.10.10.12
+              role: distribution
+              switch_priority: backup
+              vlans:
+                - vlan_id: 10
+                  name: MGMT
+                  description: Management Network
+                - vlan_id: 20
+                  name: CORP
+                  description: Corporate Network
+                - vlan_id: 30
+                  name: DMZ
+                  description: DMZ Network
+                - vlan_id: 40
+                  name: GUEST
+                  description: Guest Network
+              trunk_ports:
+                - GigabitEthernet0/1  # To SW1-CORE
+                - GigabitEthernet0/2  # To SW3-DMZ
+                - GigabitEthernet0/3  # To SW3-DMZ (redundant)
+              access_ports:
+                GigabitEthernet0/0:
+                  vlan: 20
+                  description: To pfSense CORP
+                  
+        access:
+          hosts:
+            SW3-DMZ:
+              ansible_host: 10.10.10.13
+              role: access
+              switch_priority: normal
+              vlans:
+                - vlan_id: 10
+                  name: MGMT
+                  description: Management Network
+                - vlan_id: 30
+                  name: DMZ
+                  description: DMZ Network
+              trunk_ports:
+                - GigabitEthernet0/1  # To SW1-CORE
+                - GigabitEthernet0/2  # To SW2-CORP
+                - GigabitEthernet0/3  # To SW2-CORP (redundant)
+              access_ports:
+                GigabitEthernet0/0:
+                  vlan: 30
+                  description: To pfSense DMZ
+      
+      vars:
+        ansible_connection: network_cli
+        ansible_network_os: ios
+        ansible_user: case
+        ansible_password: sidewaays
+        ansible_become: yes
+        ansible_become_method: enable
+
+# Global VLAN definitions
+vlans:
+  MGMT:
+    vlan_id: 10
+    network: 10.10.10.0/24
+    gateway: 10.10.10.1
+    dhcp_start: 10.10.10.100
+    dhcp_end: 10.10.10.200
+    
+  CORP:
+    vlan_id: 20
+    network: 172.16.1.0/24
+    gateway: 172.16.1.1
+    dhcp_start: 172.16.1.100
+    dhcp_end: 172.16.1.200
+    
+  DMZ:
+    vlan_id: 30
+    network: 192.168.100.0/24
+    gateway: 192.168.100.1
+    dhcp_start: 192.168.100.50
+    dhcp_end: 192.168.100.100
+    
+  GUEST:
+    vlan_id: 40
+    network: 192.168.200.0/24
+    gateway: 192.168.200.1
+    dhcp_start: 192.168.200.50
+    dhcp_end: 192.168.200.150
+
+# pfSense router-on-a-stick configuration
+pfsense:
+  physical_interface: em1  # Single physical interface to SW1-CORE
+  subinterfaces:
+    - parent: em1
+      vlan_id: 10
+      name: MGMT
+      ip: 10.10.10.1/24
+      
+    - parent: em1
+      vlan_id: 20
+      name: CORP
+      ip: 172.16.1.1/24
+      
+    - parent: em1
+      vlan_id: 30
+      name: DMZ
+      ip: 192.168.100.1/24
+      
+    - parent: em1
+      vlan_id: 40
+      name: GUEST
+      ip: 192.168.200.1/24
