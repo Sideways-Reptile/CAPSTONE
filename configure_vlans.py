@@ -1,454 +1,375 @@
 #!/usr/bin/env python3
 """
-Task 7: VLAN Configuration Automation
-Creates VLANs and configures trunk ports on Cisco switches
-Based on YAML inventory - uses SSH key authentication
+Task 7 - EXOS VLAN Deployment Script v3
+Incorporates all lessons learned:
+  - enable ipforwarding on all VLANs
+  - STP domain configuration per VLAN
+  - correct VLAN naming (_NET suffix)
+  - proper timeouts for EXOS commands
+  - dry-run and single-switch modes
+
+Usage:
+  python3 configure_vlans.py              # full deploy all switches
+  python3 configure_vlans.py --dry-run    # test SSH only
+  python3 configure_vlans.py --switch SW1-CORE  # single switch
 """
 
-import yaml
-from netmiko import ConnectHandler
-from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
+import paramiko
 import time
-from typing import List, Dict
 import json
+import sys
+import argparse
 from datetime import datetime
-from pathlib import Path
+
+# ── Switch Inventory ──────────────────────────────────────────────────────────
+SWITCHES = [
+    {"name": "SW1-CORE",   "host": "10.10.10.11", "role": "core",         "stp_priority": 4096},
+    {"name": "SW2-DIST",   "host": "10.10.10.12", "role": "distribution", "stp_priority": None},
+    {"name": "SW3-DIST",   "host": "10.10.10.13", "role": "distribution", "stp_priority": None},
+    {"name": "SW4-ACCESS", "host": "10.10.10.14", "role": "access",       "stp_priority": None},
+    {"name": "SW5-ACCESS", "host": "10.10.10.15", "role": "access",       "stp_priority": None},
+]
+
+USERNAME = "case"
+PASSWORD = "sidewaays"
+
+# ── VLAN Definitions ──────────────────────────────────────────────────────────
+VLANS = [
+    {"id": 10, "name": "MGMT_NET"},
+    {"id": 20, "name": "CORP_NET"},
+    {"id": 30, "name": "DMZ_NET"},
+    {"id": 40, "name": "GUEST_NET"},
+]
+
+VLAN_NAMES = {v["id"]: v["name"] for v in VLANS}
+
+# ── Per-switch port config ────────────────────────────────────────────────────
+PORT_CONFIG = {
+    "SW1-CORE": {
+        "tagged": {
+            1: [10, 20, 30, 40],   # trunk to pfSense
+            2: [10, 20, 30, 40],   # trunk to SW2-DIST
+            3: [10, 20, 30, 40],   # trunk to SW3-DIST
+        },
+        "untagged": {
+            4: 10,                 # Lbu-WS01 admin workstation
+        },
+        "mgmt_ip": "10.10.10.11/24",
+    },
+    "SW2-DIST": {
+        "tagged": {
+            1: [10, 20, 30, 40],   # trunk to SW1-CORE
+            2: [10, 20, 30],       # trunk to SW4-ACCESS
+            3: [10, 20, 30],       # trunk to SW5-ACCESS (redundant)
+        },
+        "untagged": {},
+        "mgmt_ip": "10.10.10.12/24",
+    },
+    "SW3-DIST": {
+        "tagged": {
+            1: [10, 20, 30, 40],   # trunk to SW1-CORE
+            2: [10, 30, 40],       # trunk to SW5-ACCESS
+            3: [10, 20, 30],       # trunk to SW4-ACCESS (redundant)
+        },
+        "untagged": {
+            4: 40,                 # WS-Gst (GUEST_NET)
+        },
+        "mgmt_ip": "10.10.10.13/24",
+    },
+    "SW4-ACCESS": {
+        "tagged": {
+            1: [10, 20, 30],       # trunk to SW2-DIST
+            2: [10, 20, 30],       # trunk to SW3-DIST (redundant)
+        },
+        "untagged": {
+            3: 20,                 # WIN10-WS1 (CORP_NET)
+            4: 20,                 # WIN10-WS2 (CORP_NET)
+            5: 20,                 # PRINT-SVR1 (CORP_NET)
+        },
+        "mgmt_ip": "10.10.10.14/24",
+    },
+    "SW5-ACCESS": {
+        "tagged": {
+            1: [10, 30, 40],       # trunk to SW3-DIST
+            2: [10, 20, 30],       # trunk to SW2-DIST (redundant)
+        },
+        "untagged": {
+            3: 30,                 # FILE-SVR1 (DMZ_NET)
+            4: 30,                 # extra DMZ host
+        },
+        "mgmt_ip": "10.10.10.15/24",
+    },
+}
+
+# ── Command timeouts ──────────────────────────────────────────────────────────
+COMMAND_TIMEOUTS = {
+    "save configuration": 8.0,
+    "enable stpd":        3.0,
+    "enable ssh2":        3.0,
+    "enable sntp":        2.0,
+    "enable syslog":      2.0,
+    "default":            1.5,
+}
 
 
-class VLANConfigurator:
-    """Automate VLAN configuration on Cisco switches from inventory"""
-    
-    def __init__(self, inventory_file: str = "vlan_inventory.yaml"):
-        """
-        Initialize configurator with inventory file
-        
-        Args:
-            inventory_file: Path to YAML inventory file
-        """
-        self.inventory_file = inventory_file
-        self.inventory = self._load_inventory()
-        self.switches = self._extract_switches()
-        
-    def _load_inventory(self) -> Dict:
-        """Load YAML inventory file"""
-        
-        with open(self.inventory_file, 'r') as f:
-            inventory = yaml.safe_load(f)
-        
-        print(f"[+] Loaded inventory from {self.inventory_file}")
-        return inventory
-    
-    def _extract_switches(self) -> List[Dict]:
-        """Extract switch configuration from inventory"""
-        
-        switches = []
-        
-        # Navigate inventory structure
-        cisco_switches = self.inventory['all']['children']['cisco_switches']
-        
-        # Get global vars
-        global_vars = cisco_switches['vars']
-        
-        # Iterate through switch groups (core, distribution, access)
-        for group_name, group_data in cisco_switches['children'].items():
-            for hostname, host_data in group_data['hosts'].items():
-                switch = {
-                    'hostname': hostname,
-                    'host': host_data['ansible_host'],
-                    'role': host_data['role'],
-                    'vlans': host_data.get('vlans', []),
-                    'trunk_ports': host_data.get('trunk_ports', []),
-                    'access_ports': host_data.get('access_ports', {}),
-                    'device_type': 'cisco_ios',
-                    'username': global_vars['ansible_user'],
-                    'password': global_vars.get('ansible_password', 'sidewaays'),
-                    'secret': global_vars.get('ansible_password', 'sidewaays'),
-                }
-                switches.append(switch)
-        
-        print(f"[+] Found {len(switches)} switches in inventory")
-        return switches
-    
-    def _get_connection_params(self, switch: Dict) -> Dict:
-        """Extract Netmiko connection parameters"""
-        
-        return {
-            'device_type': switch['device_type'],
-            'host': switch['host'],
-            'username': switch['username'],
-            'password': switch['password'],
-            'secret': switch['secret'],
-        }
-    
-    def generate_vlan_commands(self, vlan: Dict) -> List[str]:
-        """Generate VLAN creation commands"""
-        
-        commands = [
-            f"vlan {vlan['vlan_id']}",
-            f"name {vlan['name']}",
-        ]
-        
-        if 'description' in vlan:
-            commands.append(f"exit")
-            commands.append(f"description {vlan['description']}")
-        
-        commands.append("exit")
-        
-        return commands
-    
-    def generate_trunk_commands(self, port: str, vlan_list: List[int]) -> List[str]:
-        """Generate trunk port configuration commands"""
-        
-        allowed_vlans = ",".join(str(v) for v in sorted(vlan_list))
-        
-        commands = [
-            f"interface {port}",
-            "switchport trunk encapsulation dot1q",
-            "switchport mode trunk",
-            f"switchport trunk allowed vlan {allowed_vlans}",
-            "no shutdown",
-            "exit"
-        ]
-        
-        return commands
-    
-    def generate_access_commands(self, port: str, config: Dict) -> List[str]:
-        """Generate access port configuration commands"""
-        
-        commands = [
-            f"interface {port}",
-            "switchport mode access",
-            f"switchport access vlan {config['vlan']}",
-        ]
-        
-        if 'description' in config:
-            commands.append(f"description {config['description']}")
-        
-        commands.append("no shutdown")
-        commands.append("exit")
-        
-        return commands
-    
-    def configure_switch(self, switch: Dict) -> Dict:
-        """Configure VLANs and ports on a single switch"""
-        
-        result = {
-            'hostname': switch['hostname'],
-            'ip': switch['host'],
-            'success': False,
-            'vlans_created': [],
-            'trunks_configured': [],
-            'access_ports_configured': [],
-            'output': '',
-            'error': None
-        }
-        
-        print(f"\n{'='*70}")
-        print(f"Configuring {switch['hostname']} ({switch['host']})")
-        print(f"Role: {switch['role']}")
-        print(f"{'='*70}")
-        
+def get_timeout(cmd):
+    for key, timeout in COMMAND_TIMEOUTS.items():
+        if key in cmd:
+            return timeout
+    return COMMAND_TIMEOUTS["default"]
+
+
+def ssh_connect(host, username, password, retries=3):
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    for attempt in range(1, retries + 1):
         try:
-            # Connect to switch
-            conn_params = self._get_connection_params(switch)
-            connection = ConnectHandler(**conn_params)
-            connection.enable()
-            
-            print(f"[+] Connected successfully (using password)")
-            
-            # Configure VLANs
-            if switch['vlans']:
-                print(f"\n[*] Configuring {len(switch['vlans'])} VLANs...")
-                
-                for vlan in switch['vlans']:
-                    print(f"  [+] Creating VLAN {vlan['vlan_id']} ({vlan['name']})")
-                    
-                    commands = self.generate_vlan_commands(vlan)
-                    output = connection.send_config_set(commands)
-                    result['vlans_created'].append(vlan['vlan_id'])
-                    result['output'] += f"\n=== VLAN {vlan['vlan_id']} ===\n{output}\n"
-            
-            # Configure trunk ports
-            if switch['trunk_ports']:
-                print(f"\n[*] Configuring {len(switch['trunk_ports'])} trunk ports...")
-                
-                # Get all VLAN IDs for trunk allowed list
-                vlan_ids = [v['vlan_id'] for v in switch['vlans']]
-                
-                for port in switch['trunk_ports']:
-                    print(f"  [+] Configuring trunk: {port}")
-                    
-                    commands = self.generate_trunk_commands(port, vlan_ids)
-                    output = connection.send_config_set(commands)
-                    result['trunks_configured'].append(port)
-                    result['output'] += f"\n=== Trunk {port} ===\n{output}\n"
-            
-            # Configure access ports
-            if switch['access_ports']:
-                print(f"\n[*] Configuring {len(switch['access_ports'])} access ports...")
-                
-                for port, config in switch['access_ports'].items():
-                    print(f"  [+] Configuring access port: {port} (VLAN {config['vlan']})")
-                    
-                    commands = self.generate_access_commands(port, config)
-                    output = connection.send_config_set(commands)
-                    result['access_ports_configured'].append(port)
-                    result['output'] += f"\n=== Access {port} ===\n{output}\n"
-            
-            # Save configuration
-            print(f"\n[+] Saving configuration...")
-            save_output = connection.send_command('write memory')
-            result['output'] += f"\n=== Save ===\n{save_output}\n"
-            
-            connection.disconnect()
-            
-            result['success'] = True
-            print(f"\n[✓] {switch['hostname']} configured successfully!")
-            
-        except NetmikoTimeoutException:
-            error = f"Timeout connecting to {switch['host']}"
-            result['error'] = error
-            print(f"\n[!] {error}")
-            
-        except NetmikoAuthenticationException:
-            error = f"Authentication failed for {switch['host']} - check SSH keys"
-            result['error'] = error
-            print(f"\n[!] {error}")
-            
+            client.connect(
+                hostname=host,
+                username=username,
+                password=password,
+                timeout=15,
+                look_for_keys=False,
+                allow_agent=False,
+            )
+            return client
         except Exception as e:
-            error = str(e)
-            result['error'] = error
-            print(f"\n[!] Error: {error}")
-        
-        return result
-    
-    def verify_vlans(self, switch: Dict) -> Dict:
-        """Verify VLAN configuration on a switch"""
-        
-        result = {
-            'hostname': switch['hostname'],
-            'vlans_found': [],
-            'output': ''
-        }
-        
-        print(f"\n[*] Verifying VLANs on {switch['hostname']}...")
-        
-        try:
-            conn_params = self._get_connection_params(switch)
-            connection = ConnectHandler(**conn_params)
-            connection.enable()
-            
-            # Get VLAN info
-            vlan_output = connection.send_command('show vlan brief')
-            result['output'] = vlan_output
-            
-            # Parse VLANs from output
-            for vlan in switch['vlans']:
-                vlan_id = str(vlan['vlan_id'])
-                if vlan_id in vlan_output:
-                    result['vlans_found'].append(vlan['vlan_id'])
-                    print(f"  [✓] VLAN {vlan_id} ({vlan['name']}) - Found")
-                else:
-                    print(f"  [!] VLAN {vlan_id} ({vlan['name']}) - NOT FOUND")
-            
-            # Get trunk info
-            trunk_output = connection.send_command('show interfaces trunk')
-            result['trunk_output'] = trunk_output
-            
-            print(f"\n  Trunk Ports:")
-            for port in switch['trunk_ports']:
-                if port in trunk_output:
-                    print(f"    [✓] {port} - Trunking")
-                else:
-                    print(f"    [!] {port} - Not trunking")
-            
-            connection.disconnect()
-            
-        except Exception as e:
-            print(f"  [!] Verification error: {e}")
-            result['error'] = str(e)
-        
-        return result
-    
-    def configure_all(self) -> List[Dict]:
-        """Configure VLANs on all switches"""
-        
-        print("\n" + "="*70)
-        print("Task 7: VLAN Configuration Automation")
-        print("="*70)
-        print(f"\nInventory: {self.inventory_file}")
-        print(f"Switches: {len(self.switches)}")
-        print(f"Authentication: Password (case/sidewaays)")
-        
-        results = []
-        
-        # Configure each switch
-        for switch in self.switches:
-            result = self.configure_switch(switch)
-            results.append(result)
-            time.sleep(2)
-        
-        # Summary
-        print("\n" + "="*70)
-        print("Configuration Summary")
-        print("="*70)
-        
-        success_count = sum(1 for r in results if r['success'])
-        total_vlans = sum(len(r['vlans_created']) for r in results)
-        total_trunks = sum(len(r['trunks_configured']) for r in results)
-        
-        print(f"\nSwitches Configured: {success_count}/{len(results)}")
-        print(f"Total VLANs Created: {total_vlans}")
-        print(f"Total Trunks Configured: {total_trunks}")
-        
-        if success_count < len(results):
-            print("\n[!] Failed switches:")
-            for r in results:
-                if not r['success']:
-                    print(f"  - {r['hostname']} ({r['ip']}): {r['error']}")
-        
-        return results
-    
-    def verify_all(self) -> List[Dict]:
-        """Verify VLAN configuration on all switches"""
-        
-        print("\n" + "="*70)
-        print("VLAN Verification")
-        print("="*70)
-        
-        results = []
-        
-        for switch in self.switches:
-            result = self.verify_vlans(switch)
-            results.append(result)
-            time.sleep(1)
-        
-        return results
-    
-    def generate_report(self, config_results: List, verify_results: List):
-        """Generate deployment report"""
-        
-        report = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'task': 'Task 7 - VLAN Configuration',
-            'inventory_file': self.inventory_file,
-            'configuration': config_results,
-            'verification': verify_results,
-            'summary': {
-                'total_switches': len(config_results),
-                'configured': sum(1 for r in config_results if r['success']),
-                'total_vlans': sum(len(r['vlans_created']) for r in config_results),
-                'total_trunks': sum(len(r['trunks_configured']) for r in config_results),
-            }
-        }
-        
-        filename = 'task7_vlan_deployment_report.json'
-        with open(filename, 'w') as f:
-            json.dump(report, f, indent=2)
-        
-        print(f"\n[+] Report saved: {filename}")
-        
-        return report
-    
-    def display_topology(self):
-        """Display VLAN topology"""
-        
-        print("\n" + "="*70)
-        print("VLAN Topology")
-        print("="*70)
-        
-        for switch in self.switches:
-            print(f"\n{switch['hostname']} ({switch['role']}):")
-            print(f"  VLANs:")
-            for vlan in switch['vlans']:
-                print(f"    - VLAN {vlan['vlan_id']}: {vlan['name']}")
-            
-            if switch['trunk_ports']:
-                print(f"  Trunk Ports:")
-                for port in switch['trunk_ports']:
-                    print(f"    - {port}")
-            
-            if switch['access_ports']:
-                print(f"  Access Ports:")
-                for port, config in switch['access_ports'].items():
-                    print(f"    - {port}: VLAN {config['vlan']}")
+            print(f"    Attempt {attempt}/{retries} failed: {e}")
+            if attempt < retries:
+                time.sleep(3)
+    raise ConnectionError(f"Could not connect to {host} after {retries} attempts")
+
+
+def send_command(shell, command, wait=None):
+    if wait is None:
+        wait = get_timeout(command)
+    shell.send(command + "\n")
+    time.sleep(wait)
+    output = ""
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if shell.recv_ready():
+            output += shell.recv(4096).decode("utf-8", errors="ignore")
+            deadline = time.time() + 0.5
+        else:
+            time.sleep(0.1)
+    return output
+
+
+def clear_buffer(shell):
+    time.sleep(1.5)
+    while shell.recv_ready():
+        shell.recv(4096)
+
+
+def test_connectivity(switch):
+    name = switch["name"]
+    host = switch["host"]
+    try:
+        client = ssh_connect(host, USERNAME, PASSWORD, retries=2)
+        client.close()
+        print(f"  ✅ {name:15s} ({host}) - SSH OK")
+        return True
+    except Exception as e:
+        print(f"  ❌ {name:15s} ({host}) - FAILED: {e}")
+        return False
+
+
+def build_commands(switch):
+    """Build complete EXOS config commands for a switch."""
+    name = switch["name"]
+    cfg = PORT_CONFIG[name]
+    stp_priority = switch["stp_priority"]
+    commands = []
+
+    # ── Create VLANs (MGMT_NET exists from bootstrap) ────────────────────
+    for vlan in VLANS:
+        if vlan["name"] != "MGMT_NET":
+            commands.append(f"create vlan {vlan['name']} tag {vlan['id']}")
+
+    # ── Tagged trunk ports ────────────────────────────────────────────────
+    for port, vlan_ids in cfg["tagged"].items():
+        for vid in vlan_ids:
+            commands.append(f"configure vlan {VLAN_NAMES[vid]} add ports {port} tagged")
+
+    # ── Untagged access ports ─────────────────────────────────────────────
+    for port, vid in cfg["untagged"].items():
+        commands.append(f"configure vlan {VLAN_NAMES[vid]} add ports {port} untagged")
+
+    # ── IP Forwarding on all VLANs ────────────────────────────────────────
+    for vlan in VLANS:
+        commands.append(f"enable ipforwarding vlan {vlan['name']}")
+
+    # ── STP - add all VLANs to stpd s0 ───────────────────────────────────
+    commands.append("configure stpd s0 mode dot1w")
+    if stp_priority:
+        commands.append(f"configure stpd s0 priority {stp_priority}")
+    for vlan in VLANS:
+        commands.append(f"configure stpd s0 add vlan {vlan['name']} ports all")
+    commands.append("enable stpd s0")
+
+    # ── NTP ───────────────────────────────────────────────────────────────
+    commands.append("configure sntp-client server primary 10.10.10.1")
+    commands.append("enable sntp-client")
+
+    # ── Syslog ────────────────────────────────────────────────────────────
+    commands.append("configure syslog add 10.10.10.1 local0")
+    commands.append("enable syslog")
+
+    # ── Save ──────────────────────────────────────────────────────────────
+    commands.append("save configuration")
+
+    return commands
+
+
+def deploy_switch(switch, verbose=True):
+    name = switch["name"]
+    host = switch["host"]
+
+    print(f"\n{'='*60}")
+    print(f"  Deploying: {name} ({host})")
+    print(f"{'='*60}")
+
+    result = {
+        "switch": name,
+        "host": host,
+        "status": "unknown",
+        "commands_sent": 0,
+        "errors": [],
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    try:
+        print(f"  Connecting...")
+        client = ssh_connect(host, USERNAME, PASSWORD)
+        shell = client.invoke_shell()
+        time.sleep(2.0)
+        clear_buffer(shell)
+        print(f"  Connected ✅")
+
+        commands = build_commands(switch)
+        print(f"  Sending {len(commands)} commands...\n")
+
+        for i, cmd in enumerate(commands, 1):
+            if verbose:
+                print(f"  [{i:02d}/{len(commands)}] {cmd}", end="", flush=True)
+
+            output = send_command(shell, cmd)
+
+            is_warning = any(w in output for w in [
+                "already exists", "already a member", "already enabled",
+                "already configured", "already in stpd"
+            ])
+            is_error = any(e in output for e in [
+                "Error:", "Invalid input", "Cannot", "Failed", "Unknown command"
+            ])
+
+            if is_warning:
+                print(f" ⚠️  (already set - OK)") if verbose else None
+            elif is_error:
+                print(f" ❌") if verbose else None
+                result["errors"].append(f"{cmd} → {output.strip()[:80]}")
+            else:
+                print(f" ✅") if verbose else None
+
+            result["commands_sent"] += 1
+
+        # ── Verify ───────────────────────────────────────────────────────
+        print(f"\n  Verifying...")
+        ping_gw = send_command(shell, "ping 10.10.10.1 count 3", wait=6.0)
+        ping_sw1 = send_command(shell, "ping 10.10.10.11 count 3", wait=6.0)
+
+        gw_ok  = "3 packets received" in ping_gw  or "bytes from 10.10.10.1"  in ping_gw
+        sw1_ok = "3 packets received" in ping_sw1 or "bytes from 10.10.10.11" in ping_sw1
+
+        if gw_ok and sw1_ok:
+            result["status"] = "success"
+            print(f"  ✅ Gateway reachable | ✅ SW1 reachable")
+        elif gw_ok or sw1_ok:
+            result["status"] = "partial"
+            print(f"  ⚠️  Partial connectivity - check manually")
+        else:
+            result["status"] = "partial"
+            print(f"  ⚠️  Ping inconclusive - check manually")
+
+        client.close()
+
+    except Exception as e:
+        result["status"] = "failed"
+        result["errors"].append(str(e))
+        print(f"  ❌ FAILED: {e}")
+
+    return result
 
 
 def main():
-    """Main execution"""
-    
-    print("""
-╔═══════════════════════════════════════════════════════════════════╗
-║          Task 7: VLAN & 802.1q Configuration                      ║
-║                                                                   ║
-║  Prerequisites:                                                   ║
-║  • SSH keys configured on all switches                           ║
-║  • vlan_inventory.yaml configured                                ║
-║  • Network connectivity to switches                              ║
-║                                                                   ║
-║  This script will:                                                ║
-║  1. Create VLANs on each switch                                  ║
-║  2. Configure trunk ports (802.1q)                               ║
-║  3. Configure access ports                                        ║
-║  4. Verify configuration                                          ║
-╚═══════════════════════════════════════════════════════════════════╝
-    """)
-    
-    # Check for required modules
-    try:
-        from netmiko import ConnectHandler
-        import yaml
-    except ImportError as e:
-        print(f"[!] Missing required module: {e}")
-        print("[!] Install with: pip install netmiko pyyaml")
-        return
-    
-    # Check inventory file exists
-    inventory_file = "vlan_inventory.yaml"
-    if not Path(inventory_file).exists():
-        print(f"[!] Inventory file not found: {inventory_file}")
-        print("[!] Create vlan_inventory.yaml first")
-        return
-    
-    # Initialize configurator
-    configurator = VLANConfigurator(inventory_file)
-    
-    # Display topology
-    configurator.display_topology()
-    
-    # Confirm before proceeding
-    print("\n" + "="*70)
-    response = input("Proceed with VLAN configuration? (yes/no): ").lower()
-    
-    if response != 'yes':
-        print("[!] Configuration cancelled")
-        return
-    
-    # Configure all switches
-    config_results = configurator.configure_all()
-    
-    # Wait for convergence
-    print("\n[*] Waiting 10 seconds for network convergence...")
-    time.sleep(10)
-    
-    # Verify configuration
-    verify_results = configurator.verify_all()
-    
-    # Generate report
-    configurator.generate_report(config_results, verify_results)
-    
-    print("\n" + "="*70)
-    print("Task 7 VLAN Configuration Complete!")
-    print("="*70)
-    print("""
-Next Steps:
-1. Review task7_vlan_deployment_report.json
-2. Verify VLANs: SSH to switches, run 'show vlan brief'
-3. Verify trunks: Run 'show interfaces trunk'
-4. Configure pfSense sub-interfaces (router-on-a-stick)
-5. Test inter-VLAN routing
-    """)
+    parser = argparse.ArgumentParser(description="EXOS VLAN Deployment v3")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Test SSH connectivity only")
+    parser.add_argument("--switch", type=str, default=None,
+                        help="Single switch name e.g. --switch SW1-CORE")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Reduce output verbosity")
+    args = parser.parse_args()
+
+    print("\n" + "="*60)
+    print("  EXOS VLAN Deployment - Task 7 v3")
+    print(f"  Mode: {'DRY RUN' if args.dry_run else 'FULL DEPLOY'}")
+    print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*60)
+
+    targets = SWITCHES
+    if args.switch:
+        targets = [s for s in SWITCHES if s["name"] == args.switch]
+        if not targets:
+            print(f"  ❌ Switch '{args.switch}' not found in inventory")
+            sys.exit(1)
+        print(f"  Targeting: {args.switch}")
+
+    if args.dry_run:
+        print("\n  Testing SSH connectivity...\n")
+        results = [test_connectivity(s) for s in targets]
+        passed = sum(results)
+        print(f"\n  {passed}/{len(targets)} switches reachable via SSH")
+        return 0 if all(results) else 1
+
+    report = {
+        "task": "Task 7 - EXOS VLAN & Trunking v3",
+        "started": datetime.now().isoformat(),
+        "results": [],
+    }
+
+    for switch in targets:
+        result = deploy_switch(switch, verbose=not args.quiet)
+        report["results"].append(result)
+        time.sleep(2)
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    print(f"\n{'='*60}")
+    print("  DEPLOYMENT SUMMARY")
+    print(f"{'='*60}")
+
+    success = sum(1 for r in report["results"] if r["status"] == "success")
+    partial = sum(1 for r in report["results"] if r["status"] == "partial")
+    failed  = sum(1 for r in report["results"] if r["status"] == "failed")
+
+    for r in report["results"]:
+        icon = {"success": "✅", "partial": "⚠️ ", "failed": "❌"}.get(r["status"], "?")
+        print(f"  {icon} {r['switch']:15s} {r['host']:15s} {r['status']}")
+        if r["errors"]:
+            for err in r["errors"][:3]:
+                print(f"       → {err[:80]}")
+
+    print(f"\n  Total: {success} success | {partial} partial | {failed} failed")
+
+    report["completed"] = datetime.now().isoformat()
+    report_file = f"task7_deploy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(report_file, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"  Report saved: {report_file}")
+
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
