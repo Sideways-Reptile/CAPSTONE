@@ -1,0 +1,179 @@
+---
+# Task 7 - EXOS VLAN & Trunking Ansible Playbook
+# Usage: ansible-playbook ansible_vlans.yml -i inventory.yaml
+#
+# Requires: ansible-galaxy collection install community.network
+# Note: EXOS uses 'exos_command' module for raw CLI commands
+
+- name: "Task 7 - Deploy VLANs and Trunks on EXOS Switches"
+  hosts: switches
+  gather_facts: false
+  connection: network_cli
+
+  vars:
+    mgmt_gateway: "10.10.10.1"
+    ntp_server: "10.10.10.1"
+    syslog_server: "10.10.10.1"
+
+  tasks:
+
+    # ── Create VLANs ─────────────────────────────────────────────────────
+    - name: Create VLAN MGMT (tag 10)
+      community.network.exos_command:
+        commands:
+          - "create vlan MGMT_NET tag 10"
+
+    - name: Create VLAN CORP (tag 20)
+      community.network.exos_command:
+        commands:
+          - "create vlan CORP tag 20"
+
+    - name: Create VLAN DMZ (tag 30)
+      community.network.exos_command:
+        commands:
+          - "create vlan DMZ tag 30"
+
+    - name: Create VLAN GUEST (tag 40)
+      community.network.exos_command:
+        commands:
+          - "create vlan GUEST tag 40"
+
+    # ── Clear Default VLAN ───────────────────────────────────────────────
+    - name: Remove all ports from Default VLAN
+      community.network.exos_command:
+        commands:
+          - "configure vlan Default delete ports all"
+
+    # ── SW1-CORE Port Config ─────────────────────────────────────────────
+    - name: SW1-CORE - Configure trunk ports
+      community.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET  add ports 1 tagged"
+          - "configure vlan CORP  add ports 1 tagged"
+          - "configure vlan DMZ   add ports 1 tagged"
+          - "configure vlan GUEST add ports 1 tagged"
+          - "configure vlan MGMT_NET  add ports 2 tagged"
+          - "configure vlan CORP  add ports 2 tagged"
+          - "configure vlan DMZ   add ports 2 tagged"
+          - "configure vlan GUEST add ports 2 tagged"
+          - "configure vlan MGMT_NET  add ports 3 tagged"
+          - "configure vlan CORP  add ports 3 tagged"
+          - "configure vlan DMZ   add ports 3 tagged"
+          - "configure vlan GUEST add ports 3 tagged"
+          - "configure vlan MGMT_NET ipaddress 10.10.10.11/24"
+      when: inventory_hostname == "SW1-CORE"
+
+    # ── SW2-DIST Port Config ─────────────────────────────────────────────
+    - name: SW2-DIST - Configure trunk ports
+      community.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET add ports 1 tagged"
+          - "configure vlan CORP add ports 1 tagged"
+          - "configure vlan DMZ  add ports 1 tagged"
+          - "configure vlan GUEST add ports 1 tagged"
+          - "configure vlan MGMT_NET add ports 2 tagged"
+          - "configure vlan CORP add ports 2 tagged"
+          - "configure vlan DMZ  add ports 2 tagged"
+          - "configure vlan MGMT_NET add ports 3 tagged"
+          - "configure vlan CORP add ports 3 tagged"
+          - "configure vlan DMZ  add ports 3 tagged"
+          - "configure vlan MGMT_NET ipaddress 10.10.10.12/24"
+      when: inventory_hostname == "SW2-DIST"
+
+    # ── SW3-DIST Port Config ─────────────────────────────────────────────
+    - name: SW3-DIST - Configure trunk and guest access port
+      community.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET  add ports 1 tagged"
+          - "configure vlan CORP  add ports 1 tagged"
+          - "configure vlan DMZ   add ports 1 tagged"
+          - "configure vlan GUEST add ports 1 tagged"
+          - "configure vlan MGMT_NET  add ports 2 tagged"
+          - "configure vlan DMZ   add ports 2 tagged"
+          - "configure vlan GUEST add ports 2 tagged"
+          - "configure vlan MGMT_NET  add ports 3 tagged"
+          - "configure vlan CORP  add ports 3 tagged"
+          - "configure vlan DMZ   add ports 3 tagged"
+          - "configure vlan GUEST add ports 4 untagged"
+          - "configure vlan MGMT_NET ipaddress 10.10.10.13/24"
+      when: inventory_hostname == "SW3-DIST"
+
+    # ── SW4-ACCESS Port Config ───────────────────────────────────────────
+    - name: SW4-ACCESS - Configure trunk and CORP access ports
+      community.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET add ports 1 tagged"
+          - "configure vlan CORP add ports 1 tagged"
+          - "configure vlan DMZ  add ports 1 tagged"
+          - "configure vlan MGMT_NET add ports 2 tagged"
+          - "configure vlan CORP add ports 2 tagged"
+          - "configure vlan DMZ  add ports 2 tagged"
+          - "configure vlan CORP add ports 3 untagged"
+          - "configure vlan CORP add ports 4 untagged"
+          - "configure vlan CORP add ports 5 untagged"
+          - "configure vlan MGMT_NET ipaddress 10.10.10.14/24"
+      when: inventory_hostname == "SW4-ACCESS"
+
+    # ── SW5-ACCESS Port Config ───────────────────────────────────────────
+    - name: SW5-ACCESS - Configure trunk and DMZ access ports
+      community.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET add ports 1 tagged"
+          - "configure vlan DMZ  add ports 1 tagged"
+          - "configure vlan GUEST add ports 1 tagged"
+          - "configure vlan MGMT_NET add ports 2 tagged"
+          - "configure vlan CORP add ports 2 tagged"
+          - "configure vlan DMZ  add ports 2 tagged"
+          - "configure vlan DMZ  add ports 3 untagged"
+          - "configure vlan DMZ  add ports 4 untagged"
+          - "configure vlan MGMT_NET ipaddress 10.10.10.15/24"
+      when: inventory_hostname == "SW5-ACCESS"
+
+    # ── All Switches - Common Config ─────────────────────────────────────
+    - name: Set default gateway on all switches
+      community.network.exos_command:
+        commands:
+          - "configure iproute add default {{ mgmt_gateway }}"
+
+    - name: Enable SSH on all switches
+      community.network.exos_command:
+        commands:
+          - "enable ssh2"
+
+    - name: Configure NTP
+      community.network.exos_command:
+        commands:
+          - "configure sntp-client server primary {{ ntp_server }}"
+          - "enable sntp-client"
+
+    - name: Configure Syslog
+      community.network.exos_command:
+        commands:
+          - "configure syslog add {{ syslog_server }} local0"
+          - "enable syslog"
+
+    - name: Save configuration
+      community.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+    # ── Verification ─────────────────────────────────────────────────────
+    - name: Show VLAN summary
+      community.network.exos_command:
+        commands:
+          - "show vlan"
+      register: vlan_output
+
+    - name: Print VLAN output
+      debug:
+        var: vlan_output.stdout_lines
+
+    - name: Ping gateway from each switch
+      community.network.exos_command:
+        commands:
+          - "ping {{ mgmt_gateway }} count 3"
+      register: ping_result
+
+    - name: Print ping result
+      debug:
+        var: ping_result.stdout_lines
