@@ -48,9 +48,9 @@ PASSWORD = "sidewaays"
 # ── VLAN Definitions ──────────────────────────────────────────────────────────
 VLANS = [
     {"id": 10, "name": "MGMT_NET"},
-    {"id": 20, "name": "CORP"},
-    {"id": 30, "name": "DMZ"},
-    {"id": 40, "name": "GUEST"},
+    {"id": 20, "name": "CORP_NET"},
+    {"id": 30, "name": "DMZ_NET"},
+    {"id": 40, "name": "GUEST_NET"},
 ]
 
 # ── Per-switch port config ────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ def build_commands(switch_name):
     commands.append("enable ssh2")
 
     # NTP
-    commands.append("configure sntp-client server primary 10.10.10.1")
+    commands.append("configure sntp-client primary 10.10.10.1")
     commands.append("enable sntp-client")
 
     # Syslog
