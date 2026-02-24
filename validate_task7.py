@@ -22,7 +22,7 @@ SWITCHES = [
 USERNAME = "case"
 PASSWORD = "sidewaays"
 
-VLAN_NAMES = {10: "MGMT_NET", 20: "CORP", 30: "DMZ", 40: "GUEST"}
+VLAN_NAMES = {10: "MGMT_NET", 20: "CORP_NET", 30: "DMZ_NET", 40: "GUEST_NET"}
 
 # Ping targets from SW1-CORE to validate reachability
 PING_TARGETS = [
@@ -128,7 +128,7 @@ def validate_switch(switch):
 
         # Check 5: Trunk ports have tagged VLANs
         port_output = send_command(shell, "show ports 1 information detail")
-        if "Tagged" in port_output or "MGMT" in port_output:
+        if "Tagged" in port_output or "MGMT_NET" in port_output:
             result["checks"]["trunk_port1"] = "PASS"
             result["passed"] += 1
             print(f"    ✅ Port 1 trunk operational")
