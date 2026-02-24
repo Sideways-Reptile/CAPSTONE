@@ -209,7 +209,7 @@ def build_commands(switch):
     commands.append("enable stpd s0")
 
     # ── NTP ───────────────────────────────────────────────────────────────
-    commands.append("configure sntp-client server primary 10.10.10.1")
+    commands.append("configure sntp-client primary 10.10.10.1")
     commands.append("enable sntp-client")
 
     # ── Syslog ────────────────────────────────────────────────────────────
