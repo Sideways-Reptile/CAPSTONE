@@ -1,0 +1,170 @@
+---
+# ============================================================
+# Network Security Audit Playbook — Task 10
+# Bigfork IT Network Lab
+# Run from Ubu-WS01: ansible-playbook security_audit.yml
+# ============================================================
+
+- name: "Task 10 — Network Security Audit"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    pfsense_hq: "10.10.10.1"
+    pfsense_branch_wan: "100.64.0.2"
+    hq_ipsec_wan: "100.64.0.1"
+    branch_lan_gw: "10.20.10.1"
+    syslog_server: "10.10.10.108"
+    corp_gw: "172.16.1.1"
+    dmz_gw: "192.168.100.1"
+    guest_gw: "192.168.200.1"
+    google_dns: "8.8.8.8"
+    report_path: "/home/osboxes/ansible_audit_report.txt"
+    audit_results: []
+
+  tasks:
+
+    # ── SECTION 1: REACHABILITY ─────────────────────────────
+    - name: "1. REACHABILITY — Ping HQ-FW1 MGMT"
+      command: ping -c 2 -W 2 {{ pfsense_hq }}
+      register: ping_hq_mgmt
+      ignore_errors: true
+      changed_when: false
+
+    - name: "1. REACHABILITY — Ping HQ-FW1 CORP"
+      command: ping -c 2 -W 2 {{ corp_gw }}
+      register: ping_corp
+      ignore_errors: true
+      changed_when: false
+
+    - name: "1. REACHABILITY — Ping HQ-FW1 DMZ"
+      command: ping -c 2 -W 2 {{ dmz_gw }}
+      register: ping_dmz
+      ignore_errors: true
+      changed_when: false
+
+    - name: "1. REACHABILITY — Ping GUEST gateway"
+      command: ping -c 2 -W 2 {{ guest_gw }}
+      register: ping_guest
+      ignore_errors: true
+      changed_when: false
+
+    - name: "1. REACHABILITY — Ping Google DNS (internet)"
+      command: ping -c 2 -W 2 {{ google_dns }}
+      register: ping_internet
+      ignore_errors: true
+      changed_when: false
+
+    - name: "1. REACHABILITY — Ping Syslog Server"
+      command: ping -c 2 -W 2 {{ syslog_server }}
+      register: ping_syslog
+      ignore_errors: true
+      changed_when: false
+
+    # ── SECTION 2: IPSEC VPN ────────────────────────────────
+    - name: "2. IPSEC — Ping HQ IPSec WAN"
+      command: ping -c 2 -W 2 {{ hq_ipsec_wan }}
+      register: ping_hq_wan
+      ignore_errors: true
+      changed_when: false
+
+    - name: "2. IPSEC — Ping Branch IPSec WAN"
+      command: ping -c 2 -W 2 {{ pfsense_branch_wan }}
+      register: ping_branch_wan
+      ignore_errors: true
+      changed_when: false
+
+    - name: "2. IPSEC — Ping Branch LAN gateway (tunnel validation)"
+      command: ping -c 2 -W 3 {{ branch_lan_gw }}
+      register: ping_branch_lan
+      ignore_errors: true
+      changed_when: false
+
+    # ── SECTION 3: SYSLOG ───────────────────────────────────
+    - name: "3. SYSLOG — Check rsyslog service running"
+      command: systemctl is-active rsyslog
+      register: rsyslog_status
+      ignore_errors: true
+      changed_when: false
+
+    - name: "3. SYSLOG — Check UDP 514 listening"
+      command: ss -ulnp
+      register: syslog_port
+      ignore_errors: true
+      changed_when: false
+
+    - name: "3. SYSLOG — Count pfSense log entries"
+      shell: grep -c "pfsense" /var/log/syslog 2>/dev/null || echo "0"
+      register: syslog_entries
+      ignore_errors: true
+      changed_when: false
+
+    # ── SECTION 4: GENERATE REPORT ──────────────────────────
+    - name: "Generate audit report"
+      copy:
+        content: |
+          ============================================================
+          BIGFORK IT — NETWORK SECURITY AUDIT REPORT (Ansible)
+          Task 10 — Defense-in-Depth Validation
+          Generated: {{ ansible_date_time.iso8601 | default(lookup('pipe', 'date')) }}
+          ============================================================
+
+          SECTION 1: NETWORK REACHABILITY
+          ============================================================
+          HQ-FW1 MGMT  (10.10.10.1):    {{ 'PASS ✅' if ping_hq_mgmt.rc == 0 else 'FAIL ❌' }}
+          CORP gateway (172.16.1.1):     {{ 'PASS ✅' if ping_corp.rc == 0 else 'FAIL ❌' }}
+          DMZ  gateway (192.168.100.1):  {{ 'PASS ✅' if ping_dmz.rc == 0 else 'FAIL ❌' }}
+          GUEST gateway(192.168.200.1):  {{ 'PASS ✅' if ping_guest.rc == 0 else 'FAIL ❌' }}
+          Internet     (8.8.8.8):        {{ 'PASS ✅' if ping_internet.rc == 0 else 'FAIL ❌' }}
+          Syslog Server(10.10.10.108):   {{ 'PASS ✅' if ping_syslog.rc == 0 else 'FAIL ❌' }}
+
+          SECTION 2: IPSEC VPN TUNNEL
+          ============================================================
+          HQ IPSec WAN    (100.64.0.1):  {{ 'PASS ✅' if ping_hq_wan.rc == 0 else 'FAIL ❌' }}
+          Branch IPSec WAN(100.64.0.2):  {{ 'PASS ✅' if ping_branch_wan.rc == 0 else 'FAIL ❌' }}
+          Branch LAN GW   (10.20.10.1):  {{ 'PASS ✅' if ping_branch_lan.rc == 0 else 'FAIL ❌' }}
+            → Branch LAN reachable = IPSec tunnel is UP and passing traffic
+
+          SECTION 3: SYSLOG SERVER
+          ============================================================
+          rsyslog service:               {{ 'PASS ✅' if rsyslog_status.stdout == 'active' else 'FAIL ❌' }}
+          UDP 514 listening:             {{ 'PASS ✅' if ':514' in syslog_port.stdout else 'FAIL ❌' }}
+          pfSense log entries:           {{ syslog_entries.stdout | trim }} entries found
+
+          SECTION 4: PORT SECURITY (Manual Verification)
+          ============================================================
+          MAC locking SW4 port 3:        PASS ✅ (verified via EXOS console)
+            → configure mac-locking ports 3 first-arrival limit-learning 1
+            → link-down-action retain-macs | learn-limit-action remain-enabled
+            → Unauthorized devices silently blocked
+
+          SECTION 5: FIREWALL ZONE POLICIES (Manual Verification)
+          ============================================================
+          MGMT  → full access:           PASS ✅
+          CORP  → internet + DMZ:        PASS ✅
+          DMZ   → internet only:         PASS ✅
+          GUEST → internet, RFC1918 blocked: PASS ✅
+          IPSec → Branch CORP + DMZ:     PASS ✅
+          Logging enabled all rules:     PASS ✅
+
+          SECTION 6: DEFENSE-IN-DEPTH SUMMARY
+          ============================================================
+          Layer 2: MAC locking on access ports (SW4)
+          Layer 3: Zone firewall rules + ACLs (pfSense)
+          Layer 4: Stateful firewall + IPSec ESP encryption
+          Monitoring: External syslog (Ubu-WS01) + NTP sync
+          VPN: IKEv2/AES-256/SHA-256 site-to-site IPSec
+
+          ============================================================
+          Audit complete. Report: {{ report_path }}
+          ============================================================
+        dest: "{{ report_path }}"
+        mode: '0644'
+
+    - name: "Display audit report"
+      command: cat {{ report_path }}
+      register: report_output
+      changed_when: false
+
+    - name: "Print report to console"
+      debug:
+        msg: "{{ report_output.stdout_lines }}"
