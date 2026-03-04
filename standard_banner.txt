@@ -1,0 +1,21 @@
+*******************************************************************************
+                        AUTHORIZED ACCESS ONLY
+                           BIGFORK IT
+*******************************************************************************
+
+WARNING: This system is for authorized use only.
+
+By accessing this system, you acknowledge and agree to the following:
+
+  • All activity is monitored and logged
+  • Unauthorized access is strictly prohibited and will be prosecuted
+  • No expectation of privacy exists on this network
+  • Usage implies consent to monitoring and auditing
+  • Violators will be prosecuted to the fullest extent of applicable law
+  • System administrators may access and disclose any data on this system
+
+If you are not an authorized user, disconnect immediately.
+
+For assistance, contact IT Support: support@bigforkit.com
+
+*******************************************************************************

@@ -1,0 +1,58 @@
+# Ansible Inventory for Task 5: Cisco Switches
+# STP Configuration Inventory
+
+all:
+  children:
+    cisco_switches:
+      vars:
+        ansible_connection: network_cli
+        ansible_network_os: ios
+        ansible_user: admin
+        ansible_password: Admin123!
+        ansible_become: yes
+        ansible_become_method: enable
+        ansible_become_password: Admin123!
+        
+      hosts:
+        SW1-CORE:
+          ansible_host: 10.10.10.11
+          switch_role: root_bridge
+          stp_priority: 4096
+          description: "Core Switch - Root Bridge"
+          interfaces:
+            - name: GigabitEthernet0/0
+              description: "To pfSense MGMT"
+            - name: GigabitEthernet0/1
+              description: "To SW2-CORP"
+            - name: GigabitEthernet0/2
+              description: "To SW3-DMZ"
+          
+        SW2-CORP:
+          ansible_host: 10.10.10.12
+          switch_role: backup_root
+          stp_priority: 8192
+          description: "Distribution Switch - Corporate"
+          interfaces:
+            - name: GigabitEthernet0/0
+              description: "To pfSense CORP"
+            - name: GigabitEthernet0/1
+              description: "To SW1-CORE"
+            - name: GigabitEthernet0/2
+              description: "To SW3-DMZ (Redundant 1)"
+            - name: GigabitEthernet0/3
+              description: "To SW3-DMZ (Redundant 2)"
+          
+        SW3-DMZ:
+          ansible_host: 10.10.10.13
+          switch_role: access
+          stp_priority: 32768
+          description: "Access Switch - DMZ"
+          interfaces:
+            - name: GigabitEthernet0/0
+              description: "To pfSense DMZ"
+            - name: GigabitEthernet0/1
+              description: "To SW1-CORE"
+            - name: GigabitEthernet0/2
+              description: "To SW2-CORP (Redundant 1)"
+            - name: GigabitEthernet0/3
+              description: "To SW2-CORP (Redundant 2)"

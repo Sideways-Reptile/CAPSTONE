@@ -1,0 +1,211 @@
+---
+# Task 5: STP Configuration via Ansible
+# Configures Rapid Spanning Tree Protocol on Cisco switches
+
+- name: Task 5 - Configure Spanning Tree Protocol
+  hosts: cisco_switches
+  gather_facts: no
+  
+  vars:
+    ansible_connection: network_cli
+    ansible_network_os: ios
+    ansible_user: admin
+    ansible_password: Admin123!
+    ansible_become: yes
+    ansible_become_method: enable
+    ansible_become_password: Admin123!
+    
+  tasks:
+    - name: Display configuration banner
+      debug:
+        msg:
+          - "========================================================"
+          - "  Task 5: Rapid Spanning Tree Configuration"
+          - "  802.1w RSTP Deployment"
+          - "========================================================"
+    
+    # ========================================
+    # PHASE 1: Enable Rapid STP
+    # ========================================
+    
+    - name: Enable Rapid Spanning Tree mode
+      ios_config:
+        lines:
+          - spanning-tree mode rapid-pvst
+        save_when: changed
+      register: stp_mode
+    
+    - name: Display STP mode change
+      debug:
+        msg: "STP mode set to rapid-pvst on {{ inventory_hostname }}"
+      when: stp_mode.changed
+    
+    # ========================================
+    # PHASE 2: Set STP Priority
+    # ========================================
+    
+    - name: Set STP priority for root bridge (SW1-CORE)
+      ios_config:
+        lines:
+          - spanning-tree vlan 1 priority 4096
+        save_when: changed
+      when: inventory_hostname == 'SW1-CORE'
+    
+    - name: Set STP priority for backup root (SW2-CORP)
+      ios_config:
+        lines:
+          - spanning-tree vlan 1 priority 8192
+        save_when: changed
+      when: inventory_hostname == 'SW2-CORP'
+    
+    - name: Set STP priority for access switch (SW3-DMZ)
+      ios_config:
+        lines:
+          - spanning-tree vlan 1 priority 32768
+        save_when: changed
+      when: inventory_hostname == 'SW3-DMZ'
+    
+    # ========================================
+    # PHASE 3: Configure Interfaces
+    # ========================================
+    
+    - name: Enable all switch interfaces
+      ios_config:
+        lines:
+          - no shutdown
+          - switchport mode access
+        parents: interface range GigabitEthernet0/0 - 3
+        save_when: changed
+    
+    - name: Enable PortFast on access ports (SW3 only)
+      ios_config:
+        lines:
+          - spanning-tree portfast
+          - description Access port to end devices
+        parents: interface GigabitEthernet0/3
+        save_when: changed
+      when: inventory_hostname == 'SW3-DMZ'
+    
+    # ========================================
+    # PHASE 4: Enable Logging
+    # ========================================
+    
+    - name: Enable STP logging
+      ios_config:
+        lines:
+          - logging console informational
+          - logging monitor informational
+        save_when: changed
+    
+    # ========================================
+    # PHASE 5: Save Configuration
+    # ========================================
+    
+    - name: Save running config to startup config
+      ios_command:
+        commands:
+          - write memory
+      register: save_output
+    
+    - name: Display save confirmation
+      debug:
+        msg: "Configuration saved on {{ inventory_hostname }}"
+
+# ============================================================
+# VERIFICATION PLAYBOOK
+# ============================================================
+
+- name: Task 5 - Verify STP Configuration
+  hosts: cisco_switches
+  gather_facts: no
+  
+  vars:
+    ansible_connection: network_cli
+    ansible_network_os: ios
+    ansible_user: admin
+    ansible_password: Admin123!
+    
+  tasks:
+    - name: Wait for STP convergence
+      pause:
+        seconds: 10
+        prompt: "Waiting for STP to converge..."
+    
+    - name: Get STP summary
+      ios_command:
+        commands:
+          - show spanning-tree summary
+      register: stp_summary
+    
+    - name: Get STP root information
+      ios_command:
+        commands:
+          - show spanning-tree root
+      register: stp_root
+    
+    - name: Get blocked ports
+      ios_command:
+        commands:
+          - show spanning-tree blockedports
+      register: stp_blocked
+    
+    - name: Display STP status
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "{{ stp_summary.stdout[0] }}"
+          - "Root Info: {{ stp_root.stdout[0] }}"
+          - "Blocked Ports: {{ stp_blocked.stdout[0] }}"
+    
+    - name: Check if this is the root bridge
+      debug:
+        msg: "{{ inventory_hostname }} is the ROOT BRIDGE"
+      when: "'This bridge is the root' in stp_root.stdout[0]"
+    
+    - name: Save verification output to file
+      local_action:
+        module: copy
+        content: |
+          Hostname: {{ inventory_hostname }}
+          
+          STP Summary:
+          {{ stp_summary.stdout[0] }}
+          
+          Root Information:
+          {{ stp_root.stdout[0] }}
+          
+          Blocked Ports:
+          {{ stp_blocked.stdout[0] }}
+        dest: "./verification_{{ inventory_hostname }}.txt"
+
+# ============================================================
+# REPORTING
+# ============================================================
+
+- name: Generate STP Deployment Report
+  hosts: localhost
+  gather_facts: no
+  
+  tasks:
+    - name: Create report summary
+      debug:
+        msg:
+          - "========================================================"
+          - "  Task 5: STP Deployment Complete"
+          - "========================================================"
+          - ""
+          - "Switches Configured: 3"
+          - "  - SW1-CORE (Root Bridge, Priority 4096)"
+          - "  - SW2-CORP (Backup Root, Priority 8192)"
+          - "  - SW3-DMZ (Access Switch, Priority 32768)"
+          - ""
+          - "Verification files created:"
+          - "  - verification_SW1-CORE.txt"
+          - "  - verification_SW2-CORP.txt"
+          - "  - verification_SW3-DMZ.txt"
+          - ""
+          - "Next steps:"
+          - "  1. Review verification files"
+          - "  2. Test link failure scenario"
+          - "  3. Document topology"
+          - "========================================================"

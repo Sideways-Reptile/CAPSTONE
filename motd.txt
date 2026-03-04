@@ -1,0 +1,10 @@
+Welcome to BIGFORK IT Network
+
+REMINDER: Your activities on this system are monitored and logged.
+
+Last Login: {last_login_time}
+System Uptime: {uptime}
+
+For support: support@bigforkit.com
+
+===============================================================================
