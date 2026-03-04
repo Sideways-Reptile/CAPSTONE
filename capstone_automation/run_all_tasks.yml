@@ -1,0 +1,66 @@
+---
+# run_all_tasks.yml
+# Bigfork IT — Capstone Lab
+# Master playbook — runs ALL tasks in sequence
+#
+# Usage:
+#   ansible-playbook -i ansible_inventory.yml run_all_tasks.yml
+#   ansible-playbook -i ansible_inventory.yml run_all_tasks.yml --tags task5
+#   ansible-playbook -i ansible_inventory.yml run_all_tasks.yml --start-at-task "Task 6"
+
+- name: "Pre-flight — Connectivity Check"
+  hosts: all_switches
+  gather_facts: no
+  tags: [preflight, always]
+  tasks:
+    - name: Ping check — switch reachability
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: 10
+      register: ssh_check
+      ignore_errors: yes
+
+    - name: Report unreachable switches
+      debug:
+        msg: "⚠️  {{ inventory_hostname }} ({{ ansible_host }}) — SSH not reachable. Check GNS3."
+      when: ssh_check is failed
+
+- import_playbook: task3_banners/banners.yml
+  tags: [task3, banners]
+
+- import_playbook: task5_stp/stp_configure.yml
+  tags: [task5, stp]
+
+- import_playbook: task6_syslog_ntp/syslog_ntp.yml
+  tags: [task6, syslog, ntp]
+
+- import_playbook: task7_vlans/vlans_configure.yml
+  tags: [task7, vlans]
+
+- name: "Final — Lab Summary"
+  hosts: localhost
+  gather_facts: no
+  tags: [summary, always]
+  tasks:
+    - name: Lab automation complete
+      debug:
+        msg:
+          - "========================================================"
+          - "  Bigfork IT Capstone Lab — Automation Complete"
+          - "  Tasks automated via Ansible:"
+          - "    Task 3: Login Banners            ✓"
+          - "    Task 5: STP Configuration        ✓"
+          - "    Task 6: Syslog & NTP             ✓"
+          - "    Task 7: VLAN Segmentation        ✓"
+          - ""
+          - "  Tasks requiring GUI/Console (pfSense):"
+          - "    Task 1: VLAN subinterfaces on em1  → pfSense GUI"
+          - "    Task 2: Guest ACL rules            → pfSense GUI"
+          - "    Task 4: DHCP pools                 → pfSense GUI"
+          - "    Task 8: Branch pfSense config      → pfSense console"
+          - "    Task 9: IPSec VPN                  → pfSense GUI (both FWs)"
+          - ""
+          - "  Run final audit:"
+          - "    python3 task10_audit/security_audit.py"
+          - "========================================================"

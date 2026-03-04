@@ -1,0 +1,177 @@
+---
+# task5_stp/stp_configure.yml
+# Bigfork IT — Capstone Lab
+# Task 5: Configure Rapid STP on all EXOS switches
+#
+# IMPORTANT: EXOS uses MSTP — NOT Cisco rapid-pvst syntax.
+#
+# Usage:
+#   ansible-playbook -i ../ansible_inventory.yml stp_configure.yml
+#   ansible-playbook -i ../ansible_inventory.yml stp_configure.yml --tags verify
+
+- name: Task 5 — Configure STP on EXOS Switches
+  hosts: all_switches
+  gather_facts: no
+
+  tasks:
+    - name: Display task header
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 5: STP Configuration"
+          - "  Switch: {{ inventory_hostname }} ({{ ansible_host }})"
+          - "  Role: {{ switch_role }}"
+          - "  STP Priority: {{ stp_priority | default(32768) }}"
+          - "================================================"
+
+    - name: Create STP domain s0 (safe if exists)
+      extreme_exos.network.exos_command:
+        commands:
+          - "create stpd s0"
+      ignore_errors: yes
+
+    - name: Enable STP domain s0
+      extreme_exos.network.exos_command:
+        commands:
+          - "enable stpd s0"
+      register: stp_enable
+
+    - name: Set STP mode to MSTP CIST
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 mode mstp cist"
+
+    - name: Set STP bridge priority
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 priority {{ stp_priority | default(32768) }}"
+
+    - name: Add Default VLAN to STP domain
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 add vlan Default ports all"
+      ignore_errors: yes
+
+    - name: Add MGMT_NET VLAN to STP domain
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 add vlan MGMT_NET ports all"
+      ignore_errors: yes
+
+    - name: Add CORP_NET VLAN to STP domain
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 add vlan CORP_NET ports all"
+      ignore_errors: yes
+
+    - name: Add DMZ_NET VLAN to STP domain
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 add vlan DMZ_NET ports all"
+      ignore_errors: yes
+
+    - name: Add GUEST_NET VLAN to STP domain
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 add vlan GUEST_NET ports all"
+      ignore_errors: yes
+
+    - name: Enable auto-bind for Default VLAN
+      extreme_exos.network.exos_command:
+        commands:
+          - "enable stpd s0 auto-bind vlan Default"
+      ignore_errors: yes
+
+    - name: Set edge port mode on access switches
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure stpd s0 ports mode edge all"
+      when: switch_role == "access" or switch_role == "branch_access"
+      ignore_errors: yes
+
+    - name: Save configuration
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+    - name: Verify STP state
+      extreme_exos.network.exos_command:
+        commands:
+          - "show stpd s0"
+      register: stp_verify
+      tags: verify
+
+    - name: Display STP verification
+      debug:
+        msg: "{{ stp_verify.stdout_lines }}"
+      tags: verify
+
+
+- name: Task 5 — STP Convergence Wait & Final Verification
+  hosts: all_switches
+  gather_facts: no
+
+  tasks:
+    - name: Wait for STP convergence (10 seconds)
+      pause:
+        seconds: 10
+        prompt: "Waiting for STP to converge across all switches..."
+      run_once: true
+
+    - name: Get STP status
+      extreme_exos.network.exos_command:
+        commands:
+          - "show stpd s0"
+      register: final_stp
+
+    - name: Check root bridge on core switch
+      debug:
+        msg: "ROOT BRIDGE CONFIRMED: {{ inventory_hostname }}"
+      when:
+        - switch_role == "core"
+        - "'Root Bridge' in final_stp.stdout[0] or 'This bridge is the root' in final_stp.stdout[0]"
+
+    - name: Warn if core switch is not root
+      debug:
+        msg: "WARNING: {{ inventory_hostname }} should be root bridge but does not appear to be. Check priority."
+      when:
+        - switch_role == "core"
+        - "'Root Bridge' not in final_stp.stdout[0]"
+        - "'This bridge is the root' not in final_stp.stdout[0]"
+
+    - name: Save STP verification to local file
+      local_action:
+        module: copy
+        content: |
+          STP Verification — {{ inventory_hostname }}
+          Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+          Priority: {{ stp_priority | default(32768) }}
+          Role: {{ switch_role }}
+
+          show stpd s0 output:
+          {{ final_stp.stdout[0] }}
+        dest: "./stp_verify_{{ inventory_hostname }}.txt"
+      ignore_errors: yes
+
+
+- name: Task 5 — Generate STP Report
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Report
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 5: STP Configuration Complete"
+          - "  Expected results:"
+          - "    HQ-SW1-Core:     Priority 4096  — ROOT"
+          - "    HQ-SW2-Dist:     Priority 8192  — Distribution"
+          - "    HQ-SW3/4/5:      Priority 32768 — Access"
+          - "    BR-SW1:          Priority 32768 — Branch"
+          - "  Verification files: stp_verify_*.txt"
+          - "  Run to test failover:"
+          - "    ssh case@10.10.10.21"
+          - "    disable port 1"
+          - "    (verify convergence on SW2/SW3)"
+          - "    enable port 1"
+          - "================================================"

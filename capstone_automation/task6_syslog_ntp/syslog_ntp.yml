@@ -1,0 +1,165 @@
+---
+# task6_syslog_ntp/syslog_ntp.yml
+# Bigfork IT — Capstone Lab
+# Task 6: Configure Syslog & NTP on all EXOS switches
+#
+# Usage:
+#   ansible-playbook -i ../ansible_inventory.yml syslog_ntp.yml
+#   ansible-playbook -i ../ansible_inventory.yml syslog_ntp.yml --tags syslog
+#   ansible-playbook -i ../ansible_inventory.yml syslog_ntp.yml --tags ntp
+
+- name: Task 6 — Configure Syslog on EXOS Switches
+  hosts: all_switches
+  gather_facts: no
+
+  vars:
+    syslog_server:   "10.10.10.108"
+    syslog_port:     514
+    ntp_primary:     "10.10.10.1"    # pfSense as NTP server
+    ntp_secondary:   "0.pool.ntp.org"
+    timezone:        "PST"
+    tz_offset:       -480
+
+  tasks:
+    - name: Display task header
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 6: Syslog & NTP Configuration"
+          - "  Switch: {{ inventory_hostname }}"
+          - "  Syslog target: {{ syslog_server }}:{{ syslog_port }}"
+          - "  NTP primary: {{ ntp_primary }}"
+          - "================================================"
+
+    # ── SYSLOG ──────────────────────────────────────────────
+    - name: Add syslog target
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure syslog add {{ syslog_server }}:{{ syslog_port }} vr VR-Default local7"
+      ignore_errors: yes
+      tags: syslog
+
+    - name: Enable syslog target
+      extreme_exos.network.exos_command:
+        commands:
+          - "enable log target syslog {{ syslog_server }}:{{ syslog_port }} vr VR-Default"
+      ignore_errors: yes
+      tags: syslog
+
+    - name: Set syslog severity level
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure log target syslog {{ syslog_server }}:{{ syslog_port }} vr VR-Default severity warnings"
+      ignore_errors: yes
+      tags: syslog
+
+    - name: Configure log filter to capture all events
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure log filter DefaultFilter add events all"
+      ignore_errors: yes
+      tags: syslog
+
+    - name: Enable console logging
+      extreme_exos.network.exos_command:
+        commands:
+          - "enable log target console"
+          - "configure log target console severity informational"
+      tags: syslog
+
+    # ── NTP / SNTP ──────────────────────────────────────────
+    - name: Configure timezone
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure timezone name {{ timezone }} {{ tz_offset }}"
+      tags: ntp
+
+    - name: Enable SNTP client
+      extreme_exos.network.exos_command:
+        commands:
+          - "enable sntp-client"
+      tags: ntp
+
+    - name: Set primary NTP server (pfSense)
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure sntp-client server primary {{ ntp_primary }}"
+      tags: ntp
+
+    - name: Set secondary NTP server (public pool)
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure sntp-client server secondary {{ ntp_secondary }}"
+      ignore_errors: yes
+      tags: ntp
+
+    - name: Set NTP update interval
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure sntp-client update-interval 3600"
+      tags: ntp
+
+    # ── SAVE ────────────────────────────────────────────────
+    - name: Save configuration
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+    # ── VERIFY ──────────────────────────────────────────────
+    - name: Verify syslog configuration
+      extreme_exos.network.exos_command:
+        commands:
+          - "show log configuration"
+      register: log_config
+      tags: verify
+
+    - name: Verify SNTP status
+      extreme_exos.network.exos_command:
+        commands:
+          - "show sntp-client"
+      register: sntp_status
+      tags: verify
+
+    - name: Display syslog/NTP verification
+      debug:
+        msg:
+          - "Syslog config: {{ log_config.stdout_lines }}"
+          - "SNTP status:   {{ sntp_status.stdout_lines }}"
+      tags: verify
+
+
+- name: Task 6 — Validate rsyslog on Ubu-WS01
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Check rsyslog UDP 514 is listening
+      shell: ss -ulnp | grep ':514'
+      register: rsyslog_check
+      ignore_errors: yes
+
+    - name: rsyslog is running
+      debug:
+        msg: "✅ rsyslog UDP 514 is listening"
+      when: rsyslog_check.rc == 0
+
+    - name: rsyslog NOT running — setup instructions
+      debug:
+        msg:
+          - "❌ rsyslog UDP 514 not listening. Run these commands:"
+          - "   sudo apt install -y rsyslog"
+          - "   # Edit /etc/rsyslog.conf — uncomment:"
+          - "   #   module(load='imudp')"
+          - "   #   input(type='imudp' port='514')"
+          - "   sudo systemctl restart rsyslog"
+          - "   sudo systemctl enable rsyslog"
+      when: rsyslog_check.rc != 0
+
+    - name: Summary
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 6: Syslog & NTP Complete"
+          - "  Verify: sudo tail -f /var/log/syslog"
+          - "  Trigger event: disconnect a switch cable"
+          - "  Should see syslog entries from switches"
+          - "================================================"

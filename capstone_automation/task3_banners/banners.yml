@@ -1,0 +1,84 @@
+---
+# task3_banners/banners.yml
+# Bigfork IT — Capstone Lab
+# Task 3: Deploy Login Banners to all EXOS switches
+#
+# Usage:
+#   ansible-playbook -i ../ansible_inventory.yml banners.yml
+#   ansible-playbook -i ../ansible_inventory.yml banners.yml --limit HQ-SW1-Core
+
+- name: Task 3 — Deploy Login Banners to EXOS Switches
+  hosts: all_switches
+  gather_facts: no
+  vars:
+    banner_text: |
+      ***********************************************
+      *                                             *
+      *   AUTHORIZED ACCESS ONLY                   *
+      *                                             *
+      *   This system is property of Bigfork IT.  *
+      *   All activity is monitored and logged.    *
+      *   Unauthorized access is prohibited and   *
+      *   will be prosecuted.                       *
+      *                                             *
+      *   Disconnect now if you are not an         *
+      *   authorized user.                          *
+      *                                             *
+      ***********************************************
+
+  tasks:
+    - name: Display task header
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 3: Login Banner Deployment"
+          - "  Target: {{ inventory_hostname }}"
+          - "================================================"
+
+    - name: Configure login banner on EXOS switch
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure banner"
+          - "{{ banner_text }}"
+          - "."
+      register: banner_result
+      ignore_errors: yes
+
+    # Fallback using raw module if exos_command unavailable
+    - name: Configure banner (raw fallback)
+      ansible.netcommon.net_put:
+        src: "banner_template.txt"
+        dest: "/tmp/banner.txt"
+      when: banner_result is failed
+      ignore_errors: yes
+
+    - name: Save configuration
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+      register: save_result
+
+    - name: Verify banner applied
+      extreme_exos.network.exos_command:
+        commands:
+          - "show banner"
+      register: banner_verify
+
+    - name: Display verification
+      debug:
+        msg: "{{ banner_verify.stdout_lines }}"
+
+
+- name: Task 3 — Generate Banner Summary Report
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Report complete
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 3: Banner Deployment Complete"
+          - "  Manual step required for pfSense:"
+          - "  Run: python3 task3_banners/deploy_banners.py --generate-only"
+          - "  Then apply to pfSense console (option 8 shell)"
+          - "================================================"

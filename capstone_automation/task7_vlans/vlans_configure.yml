@@ -1,0 +1,214 @@
+---
+# task7_vlans/vlans_configure.yml
+# Bigfork IT — Capstone Lab
+# Task 7: VLAN Segmentation & 802.1Q Trunking on EXOS switches
+#
+# Usage:
+#   ansible-playbook -i ../ansible_inventory.yml vlans_configure.yml
+#   ansible-playbook -i ../ansible_inventory.yml vlans_configure.yml --tags verify
+#   ansible-playbook -i ../ansible_inventory.yml vlans_configure.yml --limit HQ-SW1-Core
+
+- name: Task 7 — Create VLANs on all EXOS switches
+  hosts: all_switches
+  gather_facts: no
+
+  vars:
+    vlans:
+      - { tag: 10, name: "MGMT_NET" }
+      - { tag: 20, name: "CORP_NET" }
+      - { tag: 30, name: "DMZ_NET"  }
+      - { tag: 40, name: "GUEST_NET" }
+
+  tasks:
+    - name: Display task header
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 7: VLAN Configuration"
+          - "  Switch: {{ inventory_hostname }} ({{ switch_role }})"
+          - "================================================"
+
+    - name: Create MGMT_NET VLAN (tag 10)
+      extreme_exos.network.exos_command:
+        commands:
+          - "create vlan MGMT_NET tag 10"
+      ignore_errors: yes
+
+    - name: Create CORP_NET VLAN (tag 20)
+      extreme_exos.network.exos_command:
+        commands:
+          - "create vlan CORP_NET tag 20"
+      ignore_errors: yes
+
+    - name: Create DMZ_NET VLAN (tag 30)
+      extreme_exos.network.exos_command:
+        commands:
+          - "create vlan DMZ_NET tag 30"
+      ignore_errors: yes
+
+    - name: Create GUEST_NET VLAN (tag 40)
+      extreme_exos.network.exos_command:
+        commands:
+          - "create vlan GUEST_NET tag 40"
+      ignore_errors: yes
+
+    - name: Save after VLAN creation
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+    - name: Verify VLANs created
+      extreme_exos.network.exos_command:
+        commands:
+          - "show vlan"
+      register: vlan_output
+      tags: verify
+
+    - name: Display VLAN list
+      debug:
+        msg: "{{ vlan_output.stdout_lines }}"
+      tags: verify
+
+
+- name: Task 7 — Configure MGMT IPs on VLANs
+  hosts: all_switches
+  gather_facts: no
+
+  tasks:
+    - name: Configure MGMT_NET IP on HQ switches
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET ipaddress {{ ansible_host }} 255.255.255.0"
+          - "configure iproute add default 10.10.10.1"
+      when: "'hq' in group_names or inventory_hostname in groups['hq_switches']"
+      ignore_errors: yes
+
+    - name: Configure Branch switch MGMT IP
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan Default ipaddress {{ ansible_host }} 255.255.255.0"
+          - "configure iproute add default 10.20.10.1"
+      when: switch_role == "branch_access"
+      ignore_errors: yes
+
+    - name: Save
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+
+- name: Task 7 — Configure Trunk Ports (Core & Distribution)
+  hosts: core,distribution
+  gather_facts: no
+
+  vars:
+    # Ports 1-4 are trunk ports on core/distribution switches
+    trunk_ports: "1,2,3,4"
+
+  tasks:
+    - name: Add all VLANs tagged to trunk ports — MGMT_NET
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET add ports {{ trunk_ports }} tagged"
+      ignore_errors: yes
+
+    - name: Add all VLANs tagged to trunk ports — CORP_NET
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan CORP_NET add ports {{ trunk_ports }} tagged"
+      ignore_errors: yes
+
+    - name: Add all VLANs tagged to trunk ports — DMZ_NET
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan DMZ_NET add ports {{ trunk_ports }} tagged"
+      ignore_errors: yes
+
+    - name: Add all VLANs tagged to trunk ports — GUEST_NET
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan GUEST_NET add ports {{ trunk_ports }} tagged"
+      ignore_errors: yes
+
+    - name: Save
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+
+- name: Task 7 — Configure Access Ports
+  hosts: access
+  gather_facts: no
+
+  vars:
+    uplink_port: 1        # Port 1 = uplink to distribution (tagged trunk)
+    access_port: 24       # Port 24 = access port for end devices
+
+  tasks:
+    - name: Configure uplink port as trunk (all VLANs tagged)
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan MGMT_NET add ports {{ uplink_port }} tagged"
+          - "configure vlan CORP_NET add ports {{ uplink_port }} tagged"
+          - "configure vlan DMZ_NET add ports {{ uplink_port }} tagged"
+          - "configure vlan GUEST_NET add ports {{ uplink_port }} tagged"
+      ignore_errors: yes
+
+    - name: Configure access port — CORP on SW3-Access-1 (port 24 → VLAN 20)
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan CORP_NET add ports {{ access_port }} untagged"
+      when: inventory_hostname == "HQ-SW3-Access-1"
+      ignore_errors: yes
+
+    - name: Configure access port — DMZ on SW4-Access-2 (port 24 → VLAN 30)
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan DMZ_NET add ports {{ access_port }} untagged"
+      when: inventory_hostname == "HQ-SW4-Access-2"
+      ignore_errors: yes
+
+    - name: Configure access port — GUEST on SW5-Access-3 (port 24 → VLAN 40)
+      extreme_exos.network.exos_command:
+        commands:
+          - "configure vlan GUEST_NET add ports {{ access_port }} untagged"
+      when: inventory_hostname == "HQ-SW5-Access-3"
+      ignore_errors: yes
+
+    - name: Save
+      extreme_exos.network.exos_command:
+        commands:
+          - "save configuration primary"
+
+
+- name: Task 7 — Final VLAN Verification
+  hosts: all_switches
+  gather_facts: no
+
+  tasks:
+    - name: Get full VLAN details
+      extreme_exos.network.exos_command:
+        commands:
+          - "show vlan detail"
+      register: vlan_detail
+
+    - name: Save VLAN verification to local file
+      local_action:
+        module: copy
+        content: |
+          VLAN Verification — {{ inventory_hostname }}
+          Role: {{ switch_role }}
+
+          {{ vlan_detail.stdout[0] }}
+        dest: "./vlan_verify_{{ inventory_hostname }}.txt"
+      ignore_errors: yes
+
+    - name: Summary
+      debug:
+        msg:
+          - "================================================"
+          - "  Task 7 Complete: {{ inventory_hostname }}"
+          - "  Expected VLANs: MGMT_NET(10) CORP_NET(20)"
+          - "                  DMZ_NET(30) GUEST_NET(40)"
+          - "  Verification: vlan_verify_{{ inventory_hostname }}.txt"
+          - "================================================"
